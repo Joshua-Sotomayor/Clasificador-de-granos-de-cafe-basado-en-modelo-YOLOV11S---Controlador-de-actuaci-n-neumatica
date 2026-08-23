@@ -19,10 +19,16 @@ class AumentadorDatos:
         probabilidad_volteo_horizontal: float = 0.5,
         probabilidad_volteo_vertical: float = 0.5,
         probabilidad_rotacion_90: float = 1.0,
-        probabilidad_brillo_contraste: float = 0.3,
+        limite_brillo: float = 0.15,
+        limite_contraste: float = 0.15,
+        probabilidad_brillo_contraste: float = 0.5,
     ):
         """
         Inicializa las transformaciones geométricas y fotométricas respetando las anotaciones YOLO.
+        
+        :param limite_brillo: Variación máxima de brillo (+/- 15%).
+        :param limite_contraste: Variación máxima de contraste (+/- 15%).
+        :param probabilidad_brillo_contraste: Probabilidad de aplicar ajuste de brillo/contraste (50%).
         """
         self.transformador = A.Compose(
             [
@@ -30,8 +36,8 @@ class AumentadorDatos:
                 A.VerticalFlip(p=probabilidad_volteo_vertical),
                 A.RandomRotate90(p=probabilidad_rotacion_90),
                 A.RandomBrightnessContrast(
-                    brightness_limit=0.15,
-                    contrast_limit=0.15,
+                    brightness_limit=(-limite_brillo, limite_brillo),
+                    contrast_limit=(-limite_contraste, limite_contraste),
                     p=probabilidad_brillo_contraste
                 ),
             ],

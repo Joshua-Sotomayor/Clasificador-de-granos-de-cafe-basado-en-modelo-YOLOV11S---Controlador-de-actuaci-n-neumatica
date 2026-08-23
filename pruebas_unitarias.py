@@ -20,7 +20,10 @@ def probar_configuracion():
     config = Configuracion()
     assert config.tamano_objetivo == 640
     assert config.proporcion_division == (0.8, 0.1, 0.1)
-    assert "cascara_cereza" in config.objetivos_aumento
+    assert "Arabica_Cereza" in config.objetivos_aumento
+    assert "Robusta_Negro" in config.objetivos_aumento
+    assert config.objetivos_aumento["Arabica_Cereza"] == 17
+    assert config.objetivos_aumento["Robusta_Negro"] == 7
     print("  -> Capa de Configuración OK.")
 
 
@@ -87,31 +90,30 @@ def probar_extraccion_id_y_particionado():
     gestor = GestorDataset(config)
 
     # Pruebas de extracción de ID de grano
-    assert gestor.extraer_id_grano("grano_001_frontal.jpg") == "grano_001"
-    assert gestor.extraer_id_grano("grano_001_reverso.png") == "grano_001"
-    assert gestor.extraer_id_grano("muestra_45_caraA.jpeg") == "muestra_45"
-    assert gestor.extraer_id_grano("muestra_45_caraB.jpeg") == "muestra_45"
-    assert gestor.extraer_id_grano("cafe_88_f.jpg") == "cafe_88"
-    assert gestor.extraer_id_grano("cafe_88_r.jpg") == "cafe_88"
+    assert gestor.extraer_id_grano("agrios_frontal_arabica.jpg") == "agrios_arabica"
+    assert gestor.extraer_id_grano("agrios_reverso_arabica.png") == "agrios_arabica"
+    assert gestor.extraer_id_grano("brocado_validacion_frontal_robusta.jpg") == "brocado_validacion_robusta"
+    assert gestor.extraer_id_grano("brocado_validacion_reverso_robusta.jpg") == "brocado_validacion_robusta"
+    assert gestor.extraer_id_grano("buenos_frontal_1_arabica.jpeg") == "buenos_1_arabica"
+    assert gestor.extraer_id_grano("buenos_reverso_1_arabica.jpeg") == "buenos_1_arabica"
 
-    # Simular grupos por ID
+    # Simular grupos por ID con partición de validación explícita
     grupos_simulados = {
-        f"grano_{i:03d}": [
-            {"nombre_base": f"grano_{i:03d}_frontal", "id_grano": f"grano_{i:03d}"},
-            {"nombre_base": f"grano_{i:03d}_reverso", "id_grano": f"grano_{i:03d}"}
-        ]
-        for i in range(100)
+        "agrios_arabica": [
+            {"nombre_base": "agrios_frontal_arabica", "id_grano": "agrios_arabica", "es_validacion": False},
+            {"nombre_base": "agrios_reverso_arabica", "id_grano": "agrios_arabica", "es_validacion": False}
+        ],
+        "agrios_val_arabica": [
+            {"nombre_base": "agrios_validacion_frontal_arabica", "id_grano": "agrios_val_arabica", "es_validacion": True},
+            {"nombre_base": "agrios_validacion_reverso_arabica", "id_grano": "agrios_val_arabica", "es_validacion": True}
+        ],
     }
 
     divisiones = gestor.dividir_dataset(grupos_simulados)
-    train_ids = {m["id_grano"] for m in divisiones["train"]}
-    val_ids = {m["id_grano"] for m in divisiones["val"]}
-    test_ids = {m["id_grano"] for m in divisiones["test"]}
-
-    # Verificar que no hay solapamiento de IDs (Zero Data Leakage)
-    assert len(train_ids.intersection(val_ids)) == 0, "Fuga de datos entre Train y Val!"
-    assert len(train_ids.intersection(test_ids)) == 0, "Fuga de datos entre Train y Test!"
-    assert len(val_ids.intersection(test_ids)) == 0, "Fuga de datos entre Val y Test!"
+    assert len(divisiones["train"]) == 2
+    assert len(divisiones["val"]) == 2
+    assert divisiones["train"][0]["nombre_base"] == "agrios_frontal_arabica"
+    assert divisiones["val"][0]["nombre_base"] == "agrios_validacion_frontal_arabica"
     print("  -> Agrupación por ID y Particionado sin Data Leakage OK.")
 
 

@@ -34,25 +34,121 @@ class GestorDataset:
 
     def extraer_id_grano(self, nombre_archivo: str) -> str:
         """
-        Extrae el identificador raíz del grano físico a partir del nombre del archivo,
-        removiendo sufijos que diferencian caras (ej. _frontal, _reverso, _f, _r, etc.)
-        para evitar que ambas caras del mismo grano queden en particiones distintas (Data Leakage).
+        Extrae el identificador raíz del grano/bandeja a partir del nombre del archivo,
+        removiendo indicadores de cara (ej. _frontal_, _reverso_, _front_, _back_, etc.)
+        para garantizar que ambas fotos del mismo grupo físico compartan el mismo ID.
 
         :param nombre_archivo: Nombre del archivo de imagen (con o sin extensión).
-        :return: Identificador único del grano físico.
+        :return: Identificador único del lote o grano físico.
         """
         nombre_base = os.path.splitext(os.path.basename(nombre_archivo))[0]
-        # Expresión regular para remover sufijos comunes de orientación/cara
-        patron_orientacion = r"([_\-\s]+(frontal|reverso|front|back|anverso|cara_?[ab]|cara|lado_?[12]|[frab]))$"
+        # Remover palabras de orientación tanto en posición intermedia como final
+        patron_orientacion = r"([_\-\s]+(frontal|reverso|front|back|anverso|cara_?[ab]|cara|lado_?[12]))"
         id_limpio = re.sub(patron_orientacion, "", nombre_base, flags=re.IGNORECASE)
+        # Normalizar separadores repetidos
+        id_limpio = re.sub(r"_+", "_", id_limpio).strip("_")
         return id_limpio if id_limpio else nombre_base
+
+    # Catálogo ordenado de las 54 imágenes capturadas correspondientes a las tareas de Label Studio (IDs 35 a 88)
+    CATALOGO_IMAGENES_LABEL_STUDIO = [
+        # --- ARÁBICA (34 imágenes -> Tareas 35 a 68) ---
+        "agrios_frontal_arabica",
+        "agrios_reverso_arabica",
+        "agrios_validacion_frontal_arabica",
+        "agrios_validacion_reverso_arabica",
+        "brocado_frontal_arabica",
+        "brocado_reverso_arabica",
+        "brocado_validacion_frontal_arabica",
+        "brocado_validacion_reverso_arabica",
+        "buenos_frontal_1_arabica",
+        "buenos_frontal_2_arabica",
+        "buenos_reverso_1_arabica",
+        "buenos_reverso_2_arabica",
+        "buenos_validacion_frontal_arabica",
+        "buenos_validacion_reverso_arabica",
+        "cascaraCereza_frontal_arabica",
+        "cascaraCereza_reverso_arabica",
+        "cascaraCereza_validacion_frontal_arabica",
+        "cascaraCereza_validacion_reverso_arabica",
+        "conchas_frontal_arabica",
+        "conchas_reverso_arabica",
+        "conchas_validacion_frontal_arabica",
+        "conchas_validacion_reverso_arabica",
+        "inmaduros_frontal_arabica",
+        "inmaduros_reverso_arabica",
+        "inmaduros_validacion_frontal_arabica",
+        "inmaduros_validacion_reverso_arabica",
+        "negros_frontal_arabica",
+        "negros_reverso_arabica",
+        "negros_validacion_frontal_arabica",
+        "negros_validacion_reverso_arabica",
+        "quebrados_frontal_arabica",
+        "quebrados_reverso_arabica",
+        "quebrados_validacion_frontal_arabica",
+        "quebrados_validacion_reverso_arabica",
+        # --- ROBUSTA (20 imágenes -> Tareas 69 a 88) ---
+        "brocado_frontal_robusta",
+        "brocado_reverso_robusta",
+        "brocado_validacion_frontal_robusta",
+        "brocado_validacion_reverso_robusta",
+        "buenos_frontal_robusta",
+        "buenos_reverso_robusta",
+        "buenos_validacion_frontal_robusta",
+        "buenos_validacion_reverso_robusta",
+        "cereza_frontal_robusta",
+        "ceraza_reverso_robusta",
+        "cereza_validacion_frontal_robusta",
+        "cereza_validacion_reverso_robusta",
+        "negros_frontal_robusta",
+        "negros_reverso_robusta",
+        "negros_validacion_frontal_robusta",
+        "negros_validacion_reverso_robusta",
+        "quebrados_frontal_robusta",
+        "quebrados_reverso_robusta",
+        "quebrados_validacion_frontal_robusta",
+        "quebrados_validacion_reverso_robusta",
+    ]
+
+    def buscar_ruta_etiqueta(self, nombre_base: str) -> str:
+        """
+        Localiza el archivo de etiquetas .txt de YOLO asociado a una imagen,
+        resolviendo por nombre directo o por el ID de tarea de Label Studio (35 en adelante).
+
+        :param nombre_base: Nombre base del archivo de imagen.
+        :return: Ruta al archivo .txt si existe, o cadena vacía.
+        """
+        dir_lbl = self.configuracion.directorio_etiquetas_entrada
+        candidatos = [
+            os.path.join(dir_lbl, f"{nombre_base}.txt"),
+            os.path.join(dir_lbl, f"{nombre_base.lower()}.txt"),
+        ]
+
+        # Verificar si corresponde a algún ID de Label Studio (35 a 88)
+        nombre_limpio = nombre_base.lower().replace("-", "_").replace(" ", "_")
+        for indice, nombre_cat in enumerate(self.CATALOGO_IMAGENES_LABEL_STUDIO):
+            id_tarea = 35 + indice
+            cat_limpio = nombre_cat.lower().replace("-", "_").replace(" ", "_")
+            if nombre_limpio == cat_limpio or nombre_limpio.startswith(cat_limpio):
+                candidatos.extend([
+                    os.path.join(dir_lbl, f"{id_tarea}.txt"),
+                    os.path.join(dir_lbl, f"task-{id_tarea}.txt"),
+                    os.path.join(dir_lbl, f"task_{id_tarea}.txt"),
+                    os.path.join(dir_lbl, f"image_{id_tarea}.txt"),
+                    os.path.join(dir_lbl, f"{id_tarea}_{nombre_base}.txt"),
+                ])
+
+        for ruta_cand in candidatos:
+            if os.path.exists(ruta_cand):
+                return ruta_cand
+
+        return ""
 
     def agrupar_por_id_grano(self) -> Dict[str, List[Dict[str, str]]]:
         """
         Escanea las imágenes del directorio de entrada y las asocia con su archivo de etiquetas .txt,
-        agrupándolas por el ID único del grano.
+        agrupándolas por el ID único del grano y detectando su pertenencia a validación.
 
-        :return: Diccionario {id_grano: [{'ruta_imagen': ..., 'ruta_etiqueta': ..., 'nombre_base': ...}, ...]}
+        :return: Diccionario {id_grano: [{'ruta_imagen': ..., 'ruta_etiqueta': ..., 'nombre_base': ..., 'es_validacion': ...}, ...]}
         """
         extensiones_validas = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
         rutas_imagenes: List[str] = []
@@ -73,18 +169,16 @@ class GestorDataset:
         for ruta_img in rutas_imagenes:
             nombre_base = os.path.splitext(os.path.basename(ruta_img))[0]
             id_grano = self.extraer_id_grano(nombre_base)
+            es_validacion = "valida" in nombre_base.lower()
 
-            # Buscar archivo de etiquetas correspondiente (.txt)
-            ruta_etiqueta = os.path.join(
-                self.configuracion.directorio_etiquetas_entrada,
-                f"{nombre_base}.txt"
-            )
+            ruta_etiqueta = self.buscar_ruta_etiqueta(nombre_base)
 
             elemento = {
                 "ruta_imagen": ruta_img,
-                "ruta_etiqueta": ruta_etiqueta if os.path.exists(ruta_etiqueta) else "",
+                "ruta_etiqueta": ruta_etiqueta,
                 "nombre_base": nombre_base,
                 "id_grano": id_grano,
+                "es_validacion": es_validacion,
             }
 
             if id_grano not in grupos_por_id:
@@ -97,14 +191,37 @@ class GestorDataset:
         self, grupos_por_id: Dict[str, List[Dict[str, str]]]
     ) -> Dict[str, List[Dict[str, str]]]:
         """
-        Divide el conjunto de granos en entrenamiento, validación y prueba a nivel de ID único,
-        garantizando que ninguna cara del mismo grano quede dividida entre splits.
+        Divide el conjunto en 'train', 'val' y 'test'.
+        Si las imágenes contienen explícitamente 'validacion' en el nombre, se asignan
+        directamente a 'val' respetando el emparejamiento por grano. Si no, se particionan
+        por proporción cuidando siempre la regla antifiltración (Zero Data Leakage).
 
         :param grupos_por_id: Diccionario de imágenes agrupadas por ID de grano.
         :return: Diccionario con listas de muestras para 'train', 'val' y 'test'.
         """
+        divisiones: Dict[str, List[Dict[str, str]]] = {
+            "train": [],
+            "val": [],
+            "test": []
+        }
+
+        # Verificar si el dataset tiene particiones predefinidas por nombre ("validacion")
+        hay_validacion_explicita = any(
+            any(m.get("es_validacion", False) for m in muestras)
+            for muestras in grupos_por_id.values()
+        )
+
+        if hay_validacion_explicita:
+            # Asignación guiada por nombres predefinidos
+            for id_grano, muestras in grupos_por_id.items():
+                if any(m.get("es_validacion", False) for m in muestras):
+                    divisiones["val"].extend(muestras)
+                else:
+                    divisiones["train"].extend(muestras)
+            return divisiones
+
+        # Si no hay nombres explícitos de validación, particionar por proporción matemática
         ids_granos = list(grupos_por_id.keys())
-        # Semilla para partición reproducible
         random.seed(self.configuracion.semilla_aleatoria)
         random.shuffle(ids_granos)
 
@@ -117,12 +234,6 @@ class GestorDataset:
         ids_train = set(ids_granos[:corte_train])
         ids_val = set(ids_granos[corte_train:corte_val])
         ids_test = set(ids_granos[corte_val:])
-
-        divisiones: Dict[str, List[Dict[str, str]]] = {
-            "train": [],
-            "val": [],
-            "test": []
-        }
 
         for id_grano, muestras in grupos_por_id.items():
             if id_grano in ids_train:
