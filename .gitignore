@@ -11,6 +11,11 @@ __pycache__/
 *.so
 .pytest_cache/
 
+# Datasets (imágenes y etiquetas procesadas)
+dataset_bruto/
+dataset_yolo/images/
+dataset_yolo/labels/
+
 # Archivos del sistema operativo
 .DS_Store
 Thumbs.db
