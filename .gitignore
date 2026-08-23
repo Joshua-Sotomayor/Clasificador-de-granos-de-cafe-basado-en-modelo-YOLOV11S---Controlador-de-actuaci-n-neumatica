@@ -1,0 +1,16 @@
+# Entornos virtuales
+transformaciones/
+venv/
+.venv/
+env/
+
+# Archivos temporales de Python y compilados
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Archivos del sistema operativo
+.DS_Store
+Thumbs.db
