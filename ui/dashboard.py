@@ -51,13 +51,16 @@ class InterfazClasificadora:
 
         self._construir_componentes()
         self._construir_interfaz()
+
+        # Iniciar cámara en vivo y consumidor de frames inmediatamente
+        self.detector.iniciar()
         self._iniciar_bucle_consumidor()
 
     def _construir_componentes(self) -> None:
         """Inicializa los controles y componentes de UI."""
         # --- Cabecera ---
         self.badge_db = StatusBadge(
-            etiqueta="MongoDB Atlas: Conectando...",
+            etiqueta="MongoDB: Conectando...",
             activo=False,
             color_activo=InstitucionalTheme.VERDE_ULSA,
             color_inactivo=InstitucionalTheme.AMARILLO_ALERTA,
@@ -71,31 +74,16 @@ class InterfazClasificadora:
 
         # --- Pestaña 1: Vista en Vivo ---
         self.img_video = ft.Image(
-            src=b"",
+            src="",
             fit=ft.BoxFit.CONTAIN,
             width=700,
             height=480,
             border_radius=10,
             gapless_playback=True,
         )
-        self.placeholder_video = ft.Container(
-            content=ft.Column(
-                controls=[
-                    ft.Icon(ft.Icons.VIDEOCAM_OFF_OUTLINED, size=56, color=InstitucionalTheme.GRIS_TERCIARIO),
-                    ft.Text("Transmisión en espera", style=InstitucionalTheme.estilo_titulo(16)),
-                    ft.Text("Presione 'Iniciar Clasificación' para comenzar la captura", style=InstitucionalTheme.estilo_subtitulo(12)),
-                ],
-                alignment=ft.MainAxisAlignment.CENTER,
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=8,
-            ),
-            alignment=ft.Alignment.CENTER,
-            width=700,
-            height=480,
-        )
 
         self.contenedor_feed = ft.Container(
-            content=self.placeholder_video,
+            content=self.img_video,
             alignment=ft.Alignment.CENTER,
             expand=True,
             **InstitucionalTheme.estilo_tarjeta()
@@ -125,7 +113,7 @@ class InterfazClasificadora:
                 padding=ft.Padding.symmetric(horizontal=18, vertical=12),
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
-            on_click=self._iniciar_detector,
+            on_click=self._iniciar_clasificacion,
             expand=True,
         )
         self.btn_pausar = ft.OutlinedButton(
@@ -137,7 +125,7 @@ class InterfazClasificadora:
                 padding=ft.Padding.symmetric(horizontal=14, vertical=10),
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
-            on_click=self._pausar_detector,
+            on_click=self._pausar_clasificacion,
             disabled=True,
             expand=True,
         )
@@ -150,22 +138,22 @@ class InterfazClasificadora:
                 padding=ft.Padding.symmetric(horizontal=14, vertical=10),
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
-            on_click=self._detener_detector,
+            on_click=self._detener_clasificacion,
             disabled=True,
             expand=True,
         )
 
-        # Indicadores en Vivo estilizados
-        self.txt_fps_vivo = ft.Text("0.0 FPS", size=15, weight=ft.FontWeight.BOLD, color=InstitucionalTheme.VERDE_ULSA)
+        # Indicadores en Vivo
+        self.txt_fps_vivo = ft.Text("30.0 FPS", size=15, weight=ft.FontWeight.BOLD, color=InstitucionalTheme.VERDE_ULSA)
         self.txt_latencia_vivo = ft.Text("0.0 ms", size=15, weight=ft.FontWeight.BOLD, color=InstitucionalTheme.CAFE_TEXTO)
         self.txt_granos_frame = ft.Text("0", size=15, weight=ft.FontWeight.BOLD, color=InstitucionalTheme.NEGRO_TERCIARIO)
-        self.badge_valvula = StatusBadge("Válvula: STANDBY", activo=False)
+        self.badge_valvula = StatusBadge("STANDBY", activo=False)
 
         # --- Pestaña 2: Panel Analítico ---
         self.card_tiempo = StatCard(
             titulo="Tiempo de Operación",
             valor_inicial="00:00:00 Hrs",
-            subtitulo="Cronómetro activo",
+            subtitulo="Sesión activa",
             icono=ft.Icons.TIMER_OUTLINED,
             color_icono=InstitucionalTheme.CAFE_TEXTO,
             fondo_icono=InstitucionalTheme.CAFE_CLARO,
@@ -224,7 +212,7 @@ class InterfazClasificadora:
         )
 
     def _crear_tile_telemetria(self, etiqueta: str, valor_control: ft.Control, icono: str, color_icono: str, fondo_icono: str) -> ft.Container:
-        """Crea una tarjeta compacta para mostrar un dato de telemetría de forma limpia."""
+        """Crea una tarjeta compacta para mostrar telemetría de forma limpia."""
         return ft.Container(
             content=ft.Row(
                 controls=[
@@ -248,7 +236,7 @@ class InterfazClasificadora:
 
     def _construir_interfaz(self) -> None:
         """Ensambla el árbol de widgets y pestañas."""
-        # Barra Superior / Encabezado
+        # Barra Superior
         cabecera = ft.Row(
             controls=[
                 ft.Row(
@@ -285,7 +273,7 @@ class InterfazClasificadora:
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
-        # Contenido Pestaña 1: Vista en Vivo (Panel Lateral con diseño limpio)
+        # Panel Lateral Derecho (Vista en Vivo)
         panel_lateral_vivo = ft.Container(
             content=ft.Column(
                 controls=[
@@ -304,7 +292,7 @@ class InterfazClasificadora:
                     ft.Row(
                         controls=[
                             ft.Icon(ft.Icons.TUNE, color=InstitucionalTheme.CAFE_TEXTO, size=18),
-                            ft.Text("Control de Inferencia", style=InstitucionalTheme.estilo_titulo(14)),
+                            ft.Text("Control de Sesión", style=InstitucionalTheme.estilo_titulo(14)),
                         ],
                         spacing=6,
                     ),
@@ -320,13 +308,13 @@ class InterfazClasificadora:
                         ],
                         spacing=6,
                     ),
-                    self._crear_tile_telemetria("FPS de Inferencia", self.txt_fps_vivo, ft.Icons.SPEED, InstitucionalTheme.VERDE_ULSA, InstitucionalTheme.VERDE_CLARO),
-                    self._crear_tile_telemetria("Latencia de Proceso", self.txt_latencia_vivo, ft.Icons.TIMER_OUTLINED, InstitucionalTheme.CAFE_TEXTO, InstitucionalTheme.CAFE_CLARO),
+                    self._crear_tile_telemetria("FPS de Cámara", self.txt_fps_vivo, ft.Icons.SPEED, InstitucionalTheme.VERDE_ULSA, InstitucionalTheme.VERDE_CLARO),
+                    self._crear_tile_telemetria("Latencia Inferencia", self.txt_latencia_vivo, ft.Icons.TIMER_OUTLINED, InstitucionalTheme.CAFE_TEXTO, InstitucionalTheme.CAFE_CLARO),
                     self._crear_tile_telemetria("Granos en Cuadro", self.txt_granos_frame, ft.Icons.GRAIN, InstitucionalTheme.VERDE_ACENTO, InstitucionalTheme.VERDE_CLARO),
                     ft.Container(height=2),
                     ft.Row(
                         controls=[
-                            ft.Text("Respuesta Válvula:", size=12, weight=ft.FontWeight.W_600, color=InstitucionalTheme.CAFE_TEXTO),
+                            ft.Text("Válvula Neumática:", size=12, weight=ft.FontWeight.W_600, color=InstitucionalTheme.CAFE_TEXTO),
                             self.badge_valvula,
                         ],
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -349,7 +337,7 @@ class InterfazClasificadora:
             spacing=15,
         )
 
-        # Contenido Pestaña 2: Panel Analítico
+        # Panel Analítico
         fila_metricas = ft.Row(
             controls=[
                 self.card_tiempo,
@@ -388,7 +376,7 @@ class InterfazClasificadora:
             spacing=15,
         )
 
-        # Control de Pestañas Principal
+        # Pestañas
         tab_bar = ft.TabBar(
             tabs=[
                 ft.Tab(label="Vista en Vivo", icon=ft.Icons.VIDEOCAM),
@@ -425,7 +413,7 @@ class InterfazClasificadora:
         )
 
     def _iniciar_bucle_consumidor(self) -> None:
-        """Inicia el hilo consumidor para procesar la cola de frames y actualizar la UI."""
+        """Inicia el hilo consumidor de video y telemetría."""
         self._hilo_consumidor = threading.Thread(
             target=self._bucle_consumidor,
             daemon=True,
@@ -434,37 +422,33 @@ class InterfazClasificadora:
         self._hilo_consumidor.start()
 
     def _bucle_consumidor(self) -> None:
-        """Consume payloads de la cola del detector y refresca los controles Flet sin congelar la UI."""
+        """Consume frames de la cola y actualiza el video a 30 FPS y las métricas en tiempo real."""
         ultimo_refresco_kpi = time.time()
 
         while self._hilo_consumidor_activo:
-            hay_cambio = False
+            hay_frame = False
             try:
-                # Obtener payload del detector con timeout breve
                 payload = self.detector.cola_salida.get(timeout=0.03)
-                frame_bytes = payload.get("frame_bytes")
-                if not frame_bytes:
+                frame_src = payload.get("frame_src")
+                if not frame_src:
                     frame_b64 = payload.get("frame_base64", "")
                     if frame_b64:
-                        import base64
-                        frame_bytes = base64.b64decode(frame_b64)
+                        frame_src = f"data:image/jpeg;base64,{frame_b64}"
 
                 detecciones = payload.get("detecciones", [])
                 fps = payload.get("fps", 0.0)
                 latencia_ms = payload.get("latencia_ms", 0.0)
                 valvula_activa = payload.get("valvula_activa", False)
 
-                # Registrar en el gestor de métricas
+                # Registrar métricas durante clasificación activa
                 if self.metricas.esta_activo:
                     self.metricas.registrar_detecciones(detecciones, fps, latencia_ms)
 
-                # Actualizar Feed de Video en la UI
-                if frame_bytes:
-                    if self.contenedor_feed.content != self.img_video:
-                        self.contenedor_feed.content = self.img_video
-                    self.img_video.src = frame_bytes
+                # Actualizar Feed de Video en vivo
+                if frame_src:
+                    self.img_video.src = frame_src
+                    hay_frame = True
 
-                # Actualizar indicadores en vivo
                 self.txt_fps_vivo.value = f"{fps:.1f} FPS"
                 self.txt_latencia_vivo.value = f"{latencia_ms:.1f} ms"
                 self.txt_granos_frame.value = str(len(detecciones))
@@ -472,29 +456,27 @@ class InterfazClasificadora:
                     activo=valvula_activa,
                     texto_nuevo="DISPARO" if valvula_activa else "STANDBY"
                 )
-                hay_cambio = True
 
             except queue.Empty:
                 pass
             except Exception as e:
-                print(f"[UI Consumidor] Error en procesamiento de frame: {e}")
+                print(f"[UI Consumidor] Error en frame: {e}")
 
-            # Refresco periódico de métricas globales y gráficos (cada 400ms)
+            # Refresco periódico de métricas globales del Dashboard (cada 300ms)
             ahora = time.time()
-            if ahora - ultimo_refresco_kpi >= 0.4:
+            if ahora - ultimo_refresco_kpi >= 0.3:
                 ultimo_refresco_kpi = ahora
                 self._actualizar_metricas_ui()
-                hay_cambio = True
+                hay_frame = True
 
-            # Solo enviar actualización a Flet si hubo un cambio real (evita saturar el canal de Flutter)
-            if hay_cambio:
+            if hay_frame:
                 try:
                     self.page.update()
                 except Exception:
                     pass
 
     def _actualizar_metricas_ui(self) -> None:
-        """Actualiza las tarjetas de KPIs y gráficos analíticos."""
+        """Actualiza las tarjetas de KPIs y gráficos analíticos en tiempo real."""
         # 1. Estado de conexión MongoDB
         if self.db_manager.esta_conectado:
             self.badge_db.set_estado(True, "MongoDB: Conectado")
@@ -519,13 +501,12 @@ class InterfazClasificadora:
             nuevo_subtitulo=f"FPS Promedio: {fps_prom:.1f}"
         )
 
-        # 3. Gráfico de Barras (Sanos vs Defectos)
+        # 3. Gráficos en vivo
         self.grafico_barras.actualizar(
             sanos=self.metricas.total_sanos,
             defectos=self.metricas.total_defectuosos,
         )
 
-        # 4. Gráfico de Pastel (Distribución de Defectos)
         porcentajes = self.metricas.obtener_porcentajes_defectos()
         self.grafico_pastel.actualizar(
             porcentajes_defectos=porcentajes,
@@ -534,8 +515,8 @@ class InterfazClasificadora:
 
     # --- Manejadores de Eventos ---
 
-    def _iniciar_detector(self, e) -> None:
-        """Inicia la inferencia y el cronómetro."""
+    def _iniciar_clasificacion(self, e) -> None:
+        """Inicia la sesión activa de clasificación y cronometraje."""
         self.detector.iniciar()
         self.metricas.iniciar_sesion()
 
@@ -545,9 +526,9 @@ class InterfazClasificadora:
         self.dropdown_fuente.disabled = True
         self.page.update()
 
-    def _pausar_detector(self, e) -> None:
-        """Pausa o reanuda la inferencia."""
-        if self.detector._pausado:
+    def _pausar_clasificacion(self, e) -> None:
+        """Pausa o reanuda el registro de métricas y la inferencia."""
+        if not self.metricas.esta_activo:
             self.detector.reanudar()
             self.metricas.iniciar_sesion()
             self.btn_pausar.content = "Pausar"
@@ -559,16 +540,15 @@ class InterfazClasificadora:
             self.btn_pausar.icon = ft.Icons.PLAY_ARROW
         self.page.update()
 
-    def _detener_detector(self, e) -> None:
-        """Detiene completamente la inferencia y pausa métricas."""
-        self.detector.detener()
+    def _detener_clasificacion(self, e) -> None:
+        """Detiene la sesión de clasificación."""
+        self.detector.pausar()
         self.metricas.pausar_sesion()
 
         self.btn_iniciar.disabled = False
         self.btn_pausar.disabled = True
         self.btn_detener.disabled = True
         self.dropdown_fuente.disabled = False
-        self.contenedor_feed.content = self.placeholder_video
         self.page.update()
 
     def _cambiar_fuente_video(self, e) -> None:
