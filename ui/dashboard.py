@@ -440,30 +440,36 @@ class InterfazClasificadora:
 
     def _bucle_consumidor(self) -> None:
         """
-        Consume frames de la cola y los escribe a archivos temporales en disco.
-        Flet recibe solo la ruta del archivo (cadena corta) y Flutter lo carga
-        desde el filesystem local, garantizando refresco a 30 FPS sin saturar
-        el WebSocket interno con data URIs base64 de 50KB+.
+        Consume frames y REEMPLAZA el widget ft.Image completo en cada cuadro.
+        Flutter cachea imágenes por ruta/src, así que cambiar solo .src no
+        fuerza un re-render. La única forma confiable es crear un nuevo
+        ft.Image con una ruta distinta cada vez.
         """
         ultimo_refresco_kpi = time.time()
+        frame_counter = 0
 
         while self._hilo_consumidor_activo:
             hay_cambio = False
             try:
                 payload = self.detector.cola_salida.get(timeout=0.03)
 
-                # --- Escribir frame a archivo temporal con doble búfer ---
                 frame_bytes = payload.get("frame_bytes", b"")
                 if frame_bytes:
-                    # Alternar entre frame_a.jpg y frame_b.jpg
-                    path = self._frame_paths[self._frame_idx]
-                    self._frame_idx = 1 - self._frame_idx  # Toggle 0↔1
-
+                    # Escribir a archivo con nombre único (ciclo de 8 archivos)
+                    frame_counter = (frame_counter + 1) % 8
+                    path = os.path.join(self._temp_dir, f"f{frame_counter}.jpg")
                     with open(path, "wb") as f:
                         f.write(frame_bytes)
 
-                    # Flet detecta el cambio porque la ruta es diferente cada vez
-                    self.img_video.src = path
+                    # Crear un widget Image NUEVO para forzar re-render en Flutter
+                    nueva_imagen = ft.Image(
+                        src=path,
+                        fit=ft.BoxFit.CONTAIN,
+                        width=700,
+                        height=480,
+                        border_radius=10,
+                    )
+                    self.contenedor_feed.content = nueva_imagen
                     hay_cambio = True
 
                 detecciones = payload.get("detecciones", [])
@@ -471,11 +477,9 @@ class InterfazClasificadora:
                 latencia_ms = payload.get("latencia_ms", 0.0)
                 valvula_activa = payload.get("valvula_activa", False)
 
-                # Registrar métricas durante clasificación activa
                 if self.metricas.esta_activo:
                     self.metricas.registrar_detecciones(detecciones, fps, latencia_ms)
 
-                # Actualizar indicadores de telemetría
                 self.txt_fps_vivo.value = f"{fps:.1f} FPS"
                 self.txt_latencia_vivo.value = f"{latencia_ms:.1f} ms"
                 self.txt_granos_frame.value = str(len(detecciones))
@@ -488,9 +492,8 @@ class InterfazClasificadora:
             except queue.Empty:
                 pass
             except Exception as e:
-                print(f"[UI Consumidor] Error en frame: {e}")
+                print(f"[UI Consumidor] Error: {e}")
 
-            # Refresco periódico de métricas globales del Dashboard (cada 300ms)
             ahora = time.time()
             if ahora - ultimo_refresco_kpi >= 0.3:
                 ultimo_refresco_kpi = ahora
