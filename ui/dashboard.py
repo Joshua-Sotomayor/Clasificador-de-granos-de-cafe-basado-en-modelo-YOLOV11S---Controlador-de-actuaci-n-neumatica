@@ -71,7 +71,7 @@ class InterfazClasificadora:
 
         # --- Pestaña 1: Vista en Vivo ---
         self.img_video = ft.Image(
-            src_base64="",
+            src=b"",
             fit=ft.BoxFit.CONTAIN,
             width=680,
             height=460,
@@ -384,7 +384,13 @@ class InterfazClasificadora:
             try:
                 # Obtener payload del detector
                 payload = self.detector.cola_salida.get(timeout=0.1)
-                frame_b64 = payload.get("frame_base64", "")
+                frame_bytes = payload.get("frame_bytes")
+                if frame_bytes is None:
+                    frame_b64 = payload.get("frame_base64", "")
+                    if frame_b64:
+                        import base64
+                        frame_bytes = base64.b64decode(frame_b64)
+
                 detecciones = payload.get("detecciones", [])
                 fps = payload.get("fps", 0.0)
                 latencia_ms = payload.get("latencia_ms", 0.0)
@@ -395,10 +401,10 @@ class InterfazClasificadora:
                     self.metricas.registrar_detecciones(detecciones, fps, latencia_ms)
 
                 # Actualizar Feed de Video en la UI
-                if frame_b64:
+                if frame_bytes:
                     if self.contenedor_feed.content != self.img_video:
                         self.contenedor_feed.content = self.img_video
-                    self.img_video.src_base64 = frame_b64
+                    self.img_video.src = frame_bytes
 
                 # Actualizar indicadores en vivo
                 self.txt_fps_vivo.value = f"{fps:.1f} FPS"

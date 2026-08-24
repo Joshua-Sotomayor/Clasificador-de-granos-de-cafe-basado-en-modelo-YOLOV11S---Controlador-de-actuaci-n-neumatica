@@ -206,11 +206,13 @@ class YOLODetector:
             # 5. Dibujar HUD en el frame con datos de telemetría
             self._dibujar_hud(frame_dibujado, fps, latencia_ms, valvula_activa, len(detecciones))
 
-            # 6. Codificar a Base64 para Flet
+            # 6. Codificar a Bytes y Base64 para Flet
+            frame_bytes = self._frame_a_bytes(frame_dibujado)
             frame_b64 = self._frame_a_base64(frame_dibujado)
 
             # 7. Despachar a la cola (si la cola está llena, descartar frame antiguo para mantener tiempo real)
             payload = {
+                "frame_bytes": frame_bytes,
                 "frame_base64": frame_b64,
                 "detecciones": detecciones,
                 "fps": round(fps, 1),
@@ -374,6 +376,13 @@ class YOLODetector:
                 "es_defecto": not es_sano,
             })
         return detecciones
+
+    def _frame_a_bytes(self, frame: np.ndarray) -> bytes:
+        """Convierte frame BGR a bytes JPEG para renderizado directo en Flet."""
+        ret, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        if not ret:
+            return b""
+        return buffer.tobytes()
 
     def _frame_a_base64(self, frame: np.ndarray) -> str:
         """Convierte frame BGR a cadena base64 JPEG optimizada para Flet."""
