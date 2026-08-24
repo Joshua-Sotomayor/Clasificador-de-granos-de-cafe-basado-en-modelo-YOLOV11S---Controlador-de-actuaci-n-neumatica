@@ -19,3 +19,8 @@ dataset_yolo/labels/
 # Archivos del sistema operativo
 .DS_Store
 Thumbs.db
+
+# Configuración local y backups
+.env
+storage/*.json
+*.zip
