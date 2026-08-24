@@ -42,10 +42,8 @@ class InterfazClasificadora:
         self.page.theme_mode = ft.ThemeMode.LIGHT
         self.page.bgcolor = InstitucionalTheme.BLANCO_FONDO
         self.page.padding = 20
-        self.page.window_width = 1280
-        self.page.window_height = 860
-        self.page.window_min_width = 1000
-        self.page.window_min_height = 700
+        self.page.width = 1280
+        self.page.height = 860
 
         # Control del bucle de actualización visual
         self._hilo_consumidor_activo = True
@@ -74,7 +72,7 @@ class InterfazClasificadora:
         # --- Pestaña 1: Vista en Vivo ---
         self.img_video = ft.Image(
             src_base64="",
-            fit=ft.ImageFit.CONTAIN,
+            fit=ft.BoxFit.CONTAIN,
             width=680,
             height=460,
             border_radius=10,
@@ -90,14 +88,14 @@ class InterfazClasificadora:
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 spacing=8,
             ),
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment.CENTER,
             width=680,
             height=460,
         )
 
         self.contenedor_feed = ft.Container(
             content=self.placeholder_video,
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment.CENTER,
             bgcolor=InstitucionalTheme.BLANCO_PURO,
             border_radius=15,
             padding=10,
@@ -126,7 +124,7 @@ class InterfazClasificadora:
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.BLANCO_PURO,
                 bgcolor=InstitucionalTheme.VERDE_ULSA,
-                padding=ft.padding.symmetric(horizontal=18, vertical=12),
+                padding=ft.Padding.symmetric(horizontal=18, vertical=12),
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
             on_click=self._iniciar_detector,
@@ -137,7 +135,7 @@ class InterfazClasificadora:
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.CAFE_TEXTO,
                 side=ft.BorderSide(1.5, InstitucionalTheme.CAFE_TEXTO),
-                padding=ft.padding.symmetric(horizontal=16, vertical=10),
+                padding=ft.Padding.symmetric(horizontal=16, vertical=10),
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
             on_click=self._pausar_detector,
@@ -149,7 +147,7 @@ class InterfazClasificadora:
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.ROJO_DEFECTO,
                 side=ft.BorderSide(1.5, InstitucionalTheme.ROJO_DEFECTO),
-                padding=ft.padding.symmetric(horizontal=16, vertical=10),
+                padding=ft.Padding.symmetric(horizontal=16, vertical=10),
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
             on_click=self._detener_detector,
@@ -207,7 +205,7 @@ class InterfazClasificadora:
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.BLANCO_PURO,
                 bgcolor=InstitucionalTheme.VERDE_ULSA,
-                padding=ft.padding.symmetric(horizontal=20, vertical=12),
+                padding=ft.Padding.symmetric(horizontal=20, vertical=12),
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
             on_click=self._guardar_lote_mongodb,
@@ -218,7 +216,7 @@ class InterfazClasificadora:
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.CAFE_TEXTO,
                 side=ft.BorderSide(1.5, InstitucionalTheme.CAFE_TEXTO),
-                padding=ft.padding.symmetric(horizontal=16, vertical=10),
+                padding=ft.Padding.symmetric(horizontal=16, vertical=10),
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
             on_click=self._reiniciar_estadisticas,
@@ -347,12 +345,12 @@ class InterfazClasificadora:
                 ft.Tab(
                     text="Vista en Vivo",
                     icon=ft.Icons.VIDEOCAM,
-                    content=ft.Container(content=vista_vivo_tab, padding=ft.padding.only(top=12), expand=True),
+                    content=ft.Container(content=vista_vivo_tab, padding=ft.Padding.only(top=12), expand=True),
                 ),
                 ft.Tab(
                     text="Dashboard Analítico",
                     icon=ft.Icons.INSERT_CHART_OUTLINED,
-                    content=ft.Container(content=dashboard_tab, padding=ft.padding.only(top=12), expand=True),
+                    content=ft.Container(content=dashboard_tab, padding=ft.Padding.only(top=12), expand=True),
                 ),
             ],
             expand=True,
@@ -519,13 +517,14 @@ class InterfazClasificadora:
 
         def _on_resultado(exito: bool, mensaje: str):
             color = ft.Colors.GREEN_700 if exito else ft.Colors.RED_700
-            self.page.show_snack_bar(
-                ft.SnackBar(
-                    content=ft.Text(mensaje, color=ft.Colors.WHITE),
-                    bgcolor=color,
-                    duration=4000,
-                )
+            snack = ft.SnackBar(
+                content=ft.Text(mensaje, color=ft.Colors.WHITE),
+                bgcolor=color,
+                duration=4000,
+                open=True,
             )
+            self.page.overlay.append(snack)
+            self.page.update()
 
         self.db_manager.guardar_resumen_lote_async(resumen, callback_resultado=_on_resultado)
 
@@ -533,10 +532,11 @@ class InterfazClasificadora:
         """Limpia contadores y reinicia el lote."""
         self.metricas.reiniciar()
         self._actualizar_metricas_ui()
-        self.page.show_snack_bar(
-            ft.SnackBar(
-                content=ft.Text("Estadísticas del lote reiniciadas.", color=ft.Colors.WHITE),
-                bgcolor=InstitucionalTheme.CAFE_TEXTO,
-                duration=2500,
-            )
+        snack = ft.SnackBar(
+            content=ft.Text("Estadísticas del lote reiniciadas.", color=ft.Colors.WHITE),
+            bgcolor=InstitucionalTheme.CAFE_TEXTO,
+            duration=2500,
+            open=True,
         )
+        self.page.overlay.append(snack)
+        self.page.update()

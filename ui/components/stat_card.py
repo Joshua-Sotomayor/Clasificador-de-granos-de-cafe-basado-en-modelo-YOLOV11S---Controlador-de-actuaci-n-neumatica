@@ -30,7 +30,7 @@ class StatCard(ft.Container):
             bgcolor=fondo_icono,
             border_radius=10,
             padding=10,
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment.CENTER,
         )
 
         contenido = ft.Row(
@@ -101,8 +101,8 @@ class StatusBadge(ft.Container):
             ),
             bgcolor=InstitucionalTheme.BLANCO_PURO,
             border_radius=20,
-            padding=ft.padding.symmetric(horizontal=12, vertical=6),
-            border=ft.border.all(1, InstitucionalTheme.CAFE_CLARO),
+            padding=ft.Padding.symmetric(horizontal=12, vertical=6),
+            border=ft.Border.all(1, InstitucionalTheme.CAFE_CLARO),
         )
 
     def set_estado(self, activo: bool, texto_nuevo: str = None) -> None:

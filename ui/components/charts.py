@@ -1,6 +1,7 @@
 """
-Componentes de Gráficos Analíticos (Flet Charts)
-Incluye Gráfico de Barras (Sanos vs Defectuosos) y Gráfico de Pastel (Distribución de Defectos).
+Componentes de Gráficos Analíticos Visuales (Flet)
+Incluye Gráfico Comparativo de Granos (Sanos vs Defectuosos) y Gráfico de Distribución de Defectos.
+Diseñado con componentes nativos de Flet compatibles y optimizados para alta tasa de refresco.
 """
 
 import flet as ft
@@ -10,84 +11,103 @@ from ui.theme import InstitucionalTheme
 
 class GraficoBarrasGranos(ft.Container):
     """
-    Gráfico de barras apiladas/comparativas para conteo acumulado de granos Sanos vs Defectuosos.
+    Gráfico comparativo y analítico para conteo en vivo de granos Sanos vs Defectuosos.
     """
 
     def __init__(self, expand: bool = True):
-        self.rod_sanos = ft.BarChartRod(
-            from_y=0,
-            to_y=0,
-            width=36,
+        # Textos de valores
+        self.txt_sanos_val = ft.Text("0", size=22, weight=ft.FontWeight.W_900, color=InstitucionalTheme.VERDE_ULSA)
+        self.txt_sanos_pct = ft.Text("100.0%", size=13, weight=ft.FontWeight.BOLD, color=InstitucionalTheme.VERDE_ULSA)
+        self.bar_sanos = ft.ProgressBar(
+            value=1.0,
             color=InstitucionalTheme.VERDE_ULSA,
-            border_radius=ft.border_radius.only(top_left=6, top_right=6),
-            tooltip="Granos Sanos",
+            bgcolor="#E8F5E9",
+            height=14,
+            border_radius=7,
         )
 
-        self.rod_defectos = ft.BarChartRod(
-            from_y=0,
-            to_y=0,
-            width=36,
+        self.txt_defectos_val = ft.Text("0", size=22, weight=ft.FontWeight.W_900, color=InstitucionalTheme.ROJO_DEFECTO)
+        self.txt_defectos_pct = ft.Text("0.0%", size=13, weight=ft.FontWeight.BOLD, color=InstitucionalTheme.ROJO_DEFECTO)
+        self.bar_defectos = ft.ProgressBar(
+            value=0.0,
             color=InstitucionalTheme.ROJO_DEFECTO,
-            border_radius=ft.border_radius.only(top_left=6, top_right=6),
-            tooltip="Granos Defectuosos",
-        )
-
-        self.chart = ft.BarChart(
-            bar_groups=[
-                ft.BarChartGroup(x=0, bar_rods=[self.rod_sanos]),
-                ft.BarChartGroup(x=1, bar_rods=[self.rod_defectos]),
-            ],
-            bottom_axis=ft.ChartAxis(
-                labels=[
-                    ft.ChartAxisLabel(
-                        value=0,
-                        label=ft.Container(
-                            content=ft.Text("Sanos", size=12, weight=ft.FontWeight.BOLD, color=InstitucionalTheme.VERDE_ULSA),
-                            padding=5,
-                        ),
-                    ),
-                    ft.ChartAxisLabel(
-                        value=1,
-                        label=ft.Container(
-                            content=ft.Text("Defectuosos", size=12, weight=ft.FontWeight.BOLD, color=InstitucionalTheme.ROJO_DEFECTO),
-                            padding=5,
-                        ),
-                    ),
-                ],
-                labels_size=32,
-            ),
-            left_axis=ft.ChartAxis(
-                labels_size=35,
-            ),
-            border=ft.border.all(1, ft.Colors.TRANSPARENT),
-            horizontal_grid_lines=ft.ChartGridLines(
-                color=ft.Colors.with_opacity(0.1, ft.Colors.BLACK),
-                width=1,
-                dash_pattern=[4, 4],
-            ),
-            interactive=True,
-            animate=300,
-            expand=True,
+            bgcolor="#FFEBEE",
+            height=14,
+            border_radius=7,
         )
 
         contenido = ft.Column(
             controls=[
                 ft.Row(
                     controls=[
-                        ft.Text("Conteo en Vivo de Granos", style=InstitucionalTheme.estilo_titulo(15)),
-                        ft.Row(
-                            controls=[
-                                self._crear_indicador_leyenda("Sanos", InstitucionalTheme.VERDE_ULSA),
-                                self._crear_indicador_leyenda("Defectos", InstitucionalTheme.ROJO_DEFECTO),
-                            ],
-                            spacing=12,
+                        ft.Text("Balance de Clasificación en Vivo", style=InstitucionalTheme.estilo_titulo(15)),
+                        ft.Container(
+                            content=ft.Text("Sanos vs Defectos", size=11, weight=ft.FontWeight.BOLD, color=InstitucionalTheme.CAFE_TEXTO),
+                            bgcolor=InstitucionalTheme.CAFE_CLARO,
+                            border_radius=10,
+                            padding=ft.Padding.symmetric(horizontal=8, vertical=3),
                         ),
                     ],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 ),
-                ft.Container(content=self.chart, expand=True, padding=ft.padding.only(top=10)),
+                ft.Container(height=10),
+                # Bloque Granos Sanos
+                ft.Column(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                ft.Row(
+                                    controls=[
+                                        ft.Container(width=12, height=12, border_radius=3, bgcolor=InstitucionalTheme.VERDE_ULSA),
+                                        ft.Text("Granos Sanos (Buenos)", size=13, weight=ft.FontWeight.BOLD, color=InstitucionalTheme.CAFE_TEXTO),
+                                    ],
+                                    spacing=8,
+                                ),
+                                ft.Row(
+                                    controls=[
+                                        self.txt_sanos_val,
+                                        self.txt_sanos_pct,
+                                    ],
+                                    spacing=8,
+                                ),
+                            ],
+                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        ),
+                        self.bar_sanos,
+                    ],
+                    spacing=6,
+                ),
+                ft.Container(height=10),
+                # Bloque Granos Defectuosos
+                ft.Column(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                ft.Row(
+                                    controls=[
+                                        ft.Container(width=12, height=12, border_radius=3, bgcolor=InstitucionalTheme.ROJO_DEFECTO),
+                                        ft.Text("Granos Defectuosos", size=13, weight=ft.FontWeight.BOLD, color=InstitucionalTheme.CAFE_TEXTO),
+                                    ],
+                                    spacing=8,
+                                ),
+                                ft.Row(
+                                    controls=[
+                                        self.txt_defectos_val,
+                                        self.txt_defectos_pct,
+                                    ],
+                                    spacing=8,
+                                ),
+                            ],
+                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        ),
+                        self.bar_defectos,
+                    ],
+                    spacing=6,
+                ),
             ],
+            spacing=5,
             expand=True,
+            alignment=ft.MainAxisAlignment.START,
         )
 
         super().__init__(
@@ -96,59 +116,53 @@ class GraficoBarrasGranos(ft.Container):
             **InstitucionalTheme.estilo_tarjeta()
         )
 
-    def _crear_indicador_leyenda(self, texto: str, color_hex: str) -> ft.Row:
-        return ft.Row(
-            controls=[
-                ft.Container(width=10, height=10, border_radius=2, bgcolor=color_hex),
-                ft.Text(texto, size=11, color=InstitucionalTheme.CAFE_TEXTO, weight=ft.FontWeight.W_500),
-            ],
-            spacing=5,
-        )
-
     def actualizar(self, sanos: int, defectos: int) -> None:
-        """Actualiza la altura de las barras con los conteos en vivo."""
-        self.rod_sanos.to_y = sanos
-        self.rod_defectos.to_y = defectos
-        max_y = max(sanos, defectos, 10)
-        self.chart.max_y = max_y * 1.15
+        """Actualiza barras y porcentajes con los conteos acumulados."""
+        total = sanos + defectos
+        self.txt_sanos_val.value = str(sanos)
+        self.txt_defectos_val.value = str(defectos)
+
+        if total > 0:
+            pct_s = (sanos / total)
+            pct_d = (defectos / total)
+            self.bar_sanos.value = pct_s
+            self.bar_defectos.value = pct_d
+            self.txt_sanos_pct.value = f"{pct_s * 100:.1f}%"
+            self.txt_defectos_pct.value = f"{pct_d * 100:.1f}%"
+        else:
+            self.bar_sanos.value = 1.0
+            self.bar_defectos.value = 0.0
+            self.txt_sanos_pct.value = "100.0%"
+            self.txt_defectos_pct.value = "0.0%"
 
 
 class GraficoPastelDefectos(ft.Container):
     """
-    Gráfico de pastel para la distribución porcentual de tipos de defectos detectados.
+    Panel de desglose porcentual de tipos de defectos detectados en el lote.
     """
 
     def __init__(self, expand: bool = True):
-        self.secciones = []
-        self.chart = ft.PieChart(
-            sections=[],
-            sections_space=2,
-            center_space_radius=35,
-            animate=300,
-            expand=True,
-        )
-
-        self.leyenda_column = ft.Column(
+        self.filas_defectos_column = ft.Column(
             controls=[],
-            spacing=4,
-            alignment=ft.MainAxisAlignment.CENTER,
+            spacing=8,
             scroll=ft.ScrollMode.AUTO,
+            expand=True,
         )
 
         contenido = ft.Column(
             controls=[
-                ft.Text("Distribución de Defectos en el Lote", style=InstitucionalTheme.estilo_titulo(15)),
                 ft.Row(
                     controls=[
-                        ft.Container(content=self.chart, expand=3, alignment=ft.alignment.center),
-                        ft.Container(content=self.leyenda_column, expand=2, padding=ft.padding.only(left=5)),
+                        ft.Text("Distribución de Defectos en el Lote", style=InstitucionalTheme.estilo_titulo(15)),
+                        ft.Text("Porcentajes relativos", style=InstitucionalTheme.estilo_subtitulo(11)),
                     ],
-                    expand=True,
-                    alignment=ft.MainAxisAlignment.CENTER,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 ),
+                ft.Divider(color=InstitucionalTheme.CAFE_CLARO, height=10),
+                self.filas_defectos_column,
             ],
             expand=True,
+            spacing=6,
         )
 
         super().__init__(
@@ -158,57 +172,57 @@ class GraficoPastelDefectos(ft.Container):
         )
 
     def actualizar(self, porcentajes_defectos: Dict[str, float], conteos_defectos: Dict[str, int]) -> None:
-        """Actualiza las secciones del gráfico de pastel y su leyenda."""
-        nuevas_secciones = []
-        nuevas_leyendas = []
-
+        """Actualiza las barras y etiquetas individuales para cada tipo de defecto."""
+        filas = []
         total_defectos = sum(conteos_defectos.values())
 
         if total_defectos == 0:
-            # Sección vacía / de espera
-            nuevas_secciones.append(
-                ft.PieChartSection(
-                    value=100,
-                    title="100% Sin Defectos",
-                    color=InstitucionalTheme.VERDE_CLARO,
-                    radius=50,
-                    title_style=ft.TextStyle(size=11, weight=ft.FontWeight.BOLD, color=InstitucionalTheme.VERDE_ULSA),
+            filas.append(
+                ft.Container(
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, color=InstitucionalTheme.VERDE_ULSA, size=20),
+                            ft.Text("Sin defectos detectados en el lote activo.", size=12, color=InstitucionalTheme.GRIS_TERCIARIO),
+                        ],
+                        spacing=8,
+                        alignment=ft.MainAxisAlignment.CENTER,
+                    ),
+                    padding=ft.Padding.symmetric(vertical=20),
+                    alignment=ft.Alignment.CENTER,
                 )
-            )
-            nuevas_leyendas.append(
-                ft.Text("Lote 100% Sano", size=12, color=InstitucionalTheme.GRIS_TERCIARIO)
             )
         else:
             for defecto, porcentaje in porcentajes_defectos.items():
-                if porcentaje <= 0:
-                    continue
-
-                color = InstitucionalTheme.COLORES_DEFECTOS.get(defecto, InstitucionalTheme.GRIS_TERCIARIO)
                 conteo = conteos_defectos.get(defecto, 0)
+                color = InstitucionalTheme.COLORES_DEFECTOS.get(defecto, InstitucionalTheme.GRIS_TERCIARIO)
+                valor_progreso = min(1.0, max(0.0, porcentaje / 100.0))
 
-                # Título en la rebanada si es mayor al 8%
-                titulo = f"{porcentaje:.0f}%" if porcentaje >= 8 else ""
-
-                nuevas_secciones.append(
-                    ft.PieChartSection(
-                        value=porcentaje,
-                        title=titulo,
-                        color=color,
-                        radius=52,
-                        title_style=ft.TextStyle(size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
-                    )
-                )
-
-                # Elemento de leyenda
-                nuevas_leyendas.append(
-                    ft.Row(
+                filas.append(
+                    ft.Column(
                         controls=[
-                            ft.Container(width=10, height=10, border_radius=2, bgcolor=color),
-                            ft.Text(f"{defecto}: {conteo} ({porcentaje:.1f}%)", size=11, color=InstitucionalTheme.CAFE_TEXTO),
+                            ft.Row(
+                                controls=[
+                                    ft.Row(
+                                        controls=[
+                                            ft.Container(width=10, height=10, border_radius=2, bgcolor=color),
+                                            ft.Text(defecto, size=12, weight=ft.FontWeight.W_600, color=InstitucionalTheme.CAFE_TEXTO),
+                                        ],
+                                        spacing=6,
+                                    ),
+                                    ft.Text(f"{conteo} ({porcentaje:.1f}%)", size=12, weight=ft.FontWeight.BOLD, color=InstitucionalTheme.CAFE_TEXTO),
+                                ],
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                            ),
+                            ft.ProgressBar(
+                                value=valor_progreso,
+                                color=color,
+                                bgcolor="#EEEEEE",
+                                height=7,
+                                border_radius=4,
+                            ),
                         ],
-                        spacing=6,
+                        spacing=3,
                     )
                 )
 
-        self.chart.sections = nuevas_secciones
-        self.leyenda_column.controls = nuevas_leyendas
+        self.filas_defectos_column.controls = filas

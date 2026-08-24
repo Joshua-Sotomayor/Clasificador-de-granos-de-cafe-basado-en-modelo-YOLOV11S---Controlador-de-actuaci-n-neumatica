@@ -94,7 +94,7 @@ class InstitucionalTheme:
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.BLANCO_PURO,
                 bgcolor=InstitucionalTheme.VERDE_ULSA,
-                padding=ft.padding.symmetric(horizontal=20, vertical=12),
+                padding=ft.Padding.symmetric(horizontal=20, vertical=12),
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
         )
@@ -109,7 +109,7 @@ class InstitucionalTheme:
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.CAFE_TEXTO,
                 side=ft.BorderSide(1.5, InstitucionalTheme.CAFE_TEXTO),
-                padding=ft.padding.symmetric(horizontal=16, vertical=10),
+                padding=ft.Padding.symmetric(horizontal=16, vertical=10),
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
         )
