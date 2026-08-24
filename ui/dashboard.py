@@ -4,9 +4,11 @@ Implementa el Dashboard con pestañas 'Vista en Vivo' y 'Panel Analítico',
 conectado al detector YOLO y al gestor de métricas en tiempo real.
 """
 
+import os
 import time
 import queue
 import threading
+import tempfile
 import flet as ft
 from typing import Optional
 
@@ -48,6 +50,21 @@ class InterfazClasificadora:
         # Control del bucle de actualización visual
         self._hilo_consumidor_activo = True
         self._hilo_consumidor: Optional[threading.Thread] = None
+
+        # Doble búfer de archivos JPEG para streaming fluido de video.
+        # Flet no refresca ft.Image si el src no cambia de valor,
+        # y enviar data URIs base64 satura el WebSocket interno.
+        # Solución: escribir frames a disco y pasar solo la ruta (cadena corta).
+        self._temp_dir = tempfile.mkdtemp(prefix="moppi_video_")
+        self._frame_paths = [
+            os.path.join(self._temp_dir, "frame_a.jpg"),
+            os.path.join(self._temp_dir, "frame_b.jpg"),
+        ]
+        self._frame_idx = 0
+        # Crear archivos vacíos iniciales
+        for p in self._frame_paths:
+            with open(p, "wb") as f:
+                f.write(b"")
 
         self._construir_componentes()
         self._construir_interfaz()
@@ -422,18 +439,32 @@ class InterfazClasificadora:
         self._hilo_consumidor.start()
 
     def _bucle_consumidor(self) -> None:
-        """Consume frames de la cola y actualiza el video a 30 FPS y las métricas en tiempo real."""
+        """
+        Consume frames de la cola y los escribe a archivos temporales en disco.
+        Flet recibe solo la ruta del archivo (cadena corta) y Flutter lo carga
+        desde el filesystem local, garantizando refresco a 30 FPS sin saturar
+        el WebSocket interno con data URIs base64 de 50KB+.
+        """
         ultimo_refresco_kpi = time.time()
 
         while self._hilo_consumidor_activo:
-            hay_frame = False
+            hay_cambio = False
             try:
                 payload = self.detector.cola_salida.get(timeout=0.03)
-                frame_src = payload.get("frame_src")
-                if not frame_src:
-                    frame_b64 = payload.get("frame_base64", "")
-                    if frame_b64:
-                        frame_src = f"data:image/jpeg;base64,{frame_b64}"
+
+                # --- Escribir frame a archivo temporal con doble búfer ---
+                frame_bytes = payload.get("frame_bytes", b"")
+                if frame_bytes:
+                    # Alternar entre frame_a.jpg y frame_b.jpg
+                    path = self._frame_paths[self._frame_idx]
+                    self._frame_idx = 1 - self._frame_idx  # Toggle 0↔1
+
+                    with open(path, "wb") as f:
+                        f.write(frame_bytes)
+
+                    # Flet detecta el cambio porque la ruta es diferente cada vez
+                    self.img_video.src = path
+                    hay_cambio = True
 
                 detecciones = payload.get("detecciones", [])
                 fps = payload.get("fps", 0.0)
@@ -444,11 +475,7 @@ class InterfazClasificadora:
                 if self.metricas.esta_activo:
                     self.metricas.registrar_detecciones(detecciones, fps, latencia_ms)
 
-                # Actualizar Feed de Video en vivo
-                if frame_src:
-                    self.img_video.src = frame_src
-                    hay_frame = True
-
+                # Actualizar indicadores de telemetría
                 self.txt_fps_vivo.value = f"{fps:.1f} FPS"
                 self.txt_latencia_vivo.value = f"{latencia_ms:.1f} ms"
                 self.txt_granos_frame.value = str(len(detecciones))
@@ -456,6 +483,7 @@ class InterfazClasificadora:
                     activo=valvula_activa,
                     texto_nuevo="DISPARO" if valvula_activa else "STANDBY"
                 )
+                hay_cambio = True
 
             except queue.Empty:
                 pass
@@ -467,9 +495,9 @@ class InterfazClasificadora:
             if ahora - ultimo_refresco_kpi >= 0.3:
                 ultimo_refresco_kpi = ahora
                 self._actualizar_metricas_ui()
-                hay_frame = True
+                hay_cambio = True
 
-            if hay_frame:
+            if hay_cambio:
                 try:
                     self.page.update()
                 except Exception:
