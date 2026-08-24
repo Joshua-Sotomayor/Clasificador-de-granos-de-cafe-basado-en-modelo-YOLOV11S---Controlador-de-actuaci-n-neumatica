@@ -73,9 +73,10 @@ class InterfazClasificadora:
         self.img_video = ft.Image(
             src=b"",
             fit=ft.BoxFit.CONTAIN,
-            width=680,
-            height=460,
+            width=700,
+            height=480,
             border_radius=10,
+            gapless_playback=True,
         )
         self.placeholder_video = ft.Container(
             content=ft.Column(
@@ -89,8 +90,8 @@ class InterfazClasificadora:
                 spacing=8,
             ),
             alignment=ft.Alignment.CENTER,
-            width=680,
-            height=460,
+            width=700,
+            height=480,
         )
 
         self.contenedor_feed = ft.Container(
@@ -102,17 +103,17 @@ class InterfazClasificadora:
 
         # Controles y Telemetría de Vista en Vivo
         self.dropdown_fuente = ft.Dropdown(
-            label="Fuente de Video",
+            label="Seleccionar Cámara / Fuente",
             value=str(self.detector.fuente_video),
             options=[
                 ft.dropdown.Option("0", "Cámara Web Principal (ID: 0)"),
                 ft.dropdown.Option("1", "Cámara Secundaria (ID: 1)"),
                 ft.dropdown.Option("demo", "Modo Simulación (Banda Sintética)"),
             ],
-            width=280,
             border_color=InstitucionalTheme.CAFE_CLARO,
             focused_border_color=InstitucionalTheme.VERDE_ULSA,
             on_select=self._cambiar_fuente_video,
+            expand=True,
         )
 
         self.btn_iniciar = ft.ElevatedButton(
@@ -125,6 +126,7 @@ class InterfazClasificadora:
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
             on_click=self._iniciar_detector,
+            expand=True,
         )
         self.btn_pausar = ft.OutlinedButton(
             content="Pausar",
@@ -132,11 +134,12 @@ class InterfazClasificadora:
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.CAFE_TEXTO,
                 side=ft.BorderSide(1.5, InstitucionalTheme.CAFE_TEXTO),
-                padding=ft.Padding.symmetric(horizontal=16, vertical=10),
+                padding=ft.Padding.symmetric(horizontal=14, vertical=10),
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
             on_click=self._pausar_detector,
             disabled=True,
+            expand=True,
         )
         self.btn_detener = ft.OutlinedButton(
             content="Detener",
@@ -144,18 +147,19 @@ class InterfazClasificadora:
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.ROJO_DEFECTO,
                 side=ft.BorderSide(1.5, InstitucionalTheme.ROJO_DEFECTO),
-                padding=ft.Padding.symmetric(horizontal=16, vertical=10),
+                padding=ft.Padding.symmetric(horizontal=14, vertical=10),
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
             on_click=self._detener_detector,
             disabled=True,
+            expand=True,
         )
 
-        # Indicadores en Vivo
-        self.txt_fps_vivo = ft.Text("0.0 FPS", style=InstitucionalTheme.estilo_valor_kpi(18))
-        self.txt_latencia_vivo = ft.Text("0.0 ms", style=InstitucionalTheme.estilo_valor_kpi(18))
+        # Indicadores en Vivo estilizados
+        self.txt_fps_vivo = ft.Text("0.0 FPS", size=15, weight=ft.FontWeight.BOLD, color=InstitucionalTheme.VERDE_ULSA)
+        self.txt_latencia_vivo = ft.Text("0.0 ms", size=15, weight=ft.FontWeight.BOLD, color=InstitucionalTheme.CAFE_TEXTO)
+        self.txt_granos_frame = ft.Text("0", size=15, weight=ft.FontWeight.BOLD, color=InstitucionalTheme.NEGRO_TERCIARIO)
         self.badge_valvula = StatusBadge("Válvula: STANDBY", activo=False)
-        self.txt_granos_frame = ft.Text("0", style=InstitucionalTheme.estilo_valor_kpi(18))
 
         # --- Pestaña 2: Panel Analítico ---
         self.card_tiempo = StatCard(
@@ -219,6 +223,29 @@ class InterfazClasificadora:
             on_click=self._reiniciar_estadisticas,
         )
 
+    def _crear_tile_telemetria(self, etiqueta: str, valor_control: ft.Control, icono: str, color_icono: str, fondo_icono: str) -> ft.Container:
+        """Crea una tarjeta compacta para mostrar un dato de telemetría de forma limpia."""
+        return ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        content=ft.Icon(icono, color=color_icono, size=18),
+                        bgcolor=fondo_icono,
+                        border_radius=8,
+                        padding=6,
+                    ),
+                    ft.Text(etiqueta, size=12, color=InstitucionalTheme.CAFE_TEXTO, weight=ft.FontWeight.W_500, expand=True),
+                    valor_control,
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            bgcolor=InstitucionalTheme.BLANCO_FONDO,
+            border_radius=10,
+            padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+            border=ft.Border.all(1, InstitucionalTheme.CAFE_CLARO),
+        )
+
     def _construir_interfaz(self) -> None:
         """Ensambla el árbol de widgets y pestañas."""
         # Barra Superior / Encabezado
@@ -258,27 +285,58 @@ class InterfazClasificadora:
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
-        # Contenido Pestaña 1: Vista en Vivo
+        # Contenido Pestaña 1: Vista en Vivo (Panel Lateral con diseño limpio)
         panel_lateral_vivo = ft.Container(
             content=ft.Column(
                 controls=[
-                    ft.Text("Configuración de Captura", style=InstitucionalTheme.estilo_titulo(15)),
-                    self.dropdown_fuente,
-                    ft.Divider(color=InstitucionalTheme.CAFE_CLARO, height=15),
-                    ft.Text("Control de Inferencia", style=InstitucionalTheme.estilo_titulo(15)),
-                    ft.Row(controls=[self.btn_iniciar], alignment=ft.MainAxisAlignment.START),
+                    # 1. Configuración de Cámara
+                    ft.Row(
+                        controls=[
+                            ft.Icon(ft.Icons.VIDEOCAM_OUTLINED, color=InstitucionalTheme.CAFE_TEXTO, size=18),
+                            ft.Text("Origen de Video", style=InstitucionalTheme.estilo_titulo(14)),
+                        ],
+                        spacing=6,
+                    ),
+                    ft.Row(controls=[self.dropdown_fuente]),
+                    ft.Divider(color=InstitucionalTheme.CAFE_CLARO, height=10),
+
+                    # 2. Control de Inferencia
+                    ft.Row(
+                        controls=[
+                            ft.Icon(ft.Icons.TUNE, color=InstitucionalTheme.CAFE_TEXTO, size=18),
+                            ft.Text("Control de Inferencia", style=InstitucionalTheme.estilo_titulo(14)),
+                        ],
+                        spacing=6,
+                    ),
+                    ft.Row(controls=[self.btn_iniciar]),
                     ft.Row(controls=[self.btn_pausar, self.btn_detener], spacing=10),
-                    ft.Divider(color=InstitucionalTheme.CAFE_CLARO, height=15),
-                    ft.Text("Telemetría en Vivo", style=InstitucionalTheme.estilo_titulo(15)),
-                    ft.Row([ft.Text("Tasa de Procesamiento:", style=InstitucionalTheme.estilo_subtitulo(12)), self.txt_fps_vivo], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                    ft.Row([ft.Text("Latencia de Inferencia:", style=InstitucionalTheme.estilo_subtitulo(12)), self.txt_latencia_vivo], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                    ft.Row([ft.Text("Granos en Cuadro:", style=InstitucionalTheme.estilo_subtitulo(12)), self.txt_granos_frame], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                    ft.Container(height=5),
-                    ft.Row([ft.Text("Respuesta Neumática (<35ms):", style=InstitucionalTheme.estilo_subtitulo(11)), self.badge_valvula], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    ft.Divider(color=InstitucionalTheme.CAFE_CLARO, height=10),
+
+                    # 3. Telemetría de Hardware
+                    ft.Row(
+                        controls=[
+                            ft.Icon(ft.Icons.SENSORS, color=InstitucionalTheme.CAFE_TEXTO, size=18),
+                            ft.Text("Telemetría en Vivo", style=InstitucionalTheme.estilo_titulo(14)),
+                        ],
+                        spacing=6,
+                    ),
+                    self._crear_tile_telemetria("FPS de Inferencia", self.txt_fps_vivo, ft.Icons.SPEED, InstitucionalTheme.VERDE_ULSA, InstitucionalTheme.VERDE_CLARO),
+                    self._crear_tile_telemetria("Latencia de Proceso", self.txt_latencia_vivo, ft.Icons.TIMER_OUTLINED, InstitucionalTheme.CAFE_TEXTO, InstitucionalTheme.CAFE_CLARO),
+                    self._crear_tile_telemetria("Granos en Cuadro", self.txt_granos_frame, ft.Icons.GRAIN, InstitucionalTheme.VERDE_ACENTO, InstitucionalTheme.VERDE_CLARO),
+                    ft.Container(height=2),
+                    ft.Row(
+                        controls=[
+                            ft.Text("Respuesta Válvula:", size=12, weight=ft.FontWeight.W_600, color=InstitucionalTheme.CAFE_TEXTO),
+                            self.badge_valvula,
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
                 ],
-                spacing=10,
+                spacing=8,
+                scroll=ft.ScrollMode.AUTO,
             ),
-            width=320,
+            width=370,
             **InstitucionalTheme.estilo_tarjeta()
         )
 
@@ -376,15 +434,16 @@ class InterfazClasificadora:
         self._hilo_consumidor.start()
 
     def _bucle_consumidor(self) -> None:
-        """Consume payloads de la cola del detector y refresca los controles Flet."""
+        """Consume payloads de la cola del detector y refresca los controles Flet sin congelar la UI."""
         ultimo_refresco_kpi = time.time()
 
         while self._hilo_consumidor_activo:
+            hay_cambio = False
             try:
-                # Obtener payload del detector
-                payload = self.detector.cola_salida.get(timeout=0.1)
+                # Obtener payload del detector con timeout breve
+                payload = self.detector.cola_salida.get(timeout=0.03)
                 frame_bytes = payload.get("frame_bytes")
-                if frame_bytes is None:
+                if not frame_bytes:
                     frame_b64 = payload.get("frame_base64", "")
                     if frame_b64:
                         import base64
@@ -411,8 +470,9 @@ class InterfazClasificadora:
                 self.txt_granos_frame.value = str(len(detecciones))
                 self.badge_valvula.set_estado(
                     activo=valvula_activa,
-                    texto_nuevo="VÁLVULA: DISPARO" if valvula_activa else "VÁLVULA: STANDBY"
+                    texto_nuevo="DISPARO" if valvula_activa else "STANDBY"
                 )
+                hay_cambio = True
 
             except queue.Empty:
                 pass
@@ -424,13 +484,14 @@ class InterfazClasificadora:
             if ahora - ultimo_refresco_kpi >= 0.4:
                 ultimo_refresco_kpi = ahora
                 self._actualizar_metricas_ui()
+                hay_cambio = True
 
-            try:
-                self.page.update()
-            except Exception:
-                pass
-
-            time.sleep(0.01)
+            # Solo enviar actualización a Flet si hubo un cambio real (evita saturar el canal de Flutter)
+            if hay_cambio:
+                try:
+                    self.page.update()
+                except Exception:
+                    pass
 
     def _actualizar_metricas_ui(self) -> None:
         """Actualiza las tarjetas de KPIs y gráficos analíticos."""

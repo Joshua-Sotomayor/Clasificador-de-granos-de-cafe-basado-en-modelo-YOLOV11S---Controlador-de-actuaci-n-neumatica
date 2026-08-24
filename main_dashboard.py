@@ -21,7 +21,8 @@ from ui.dashboard import InterfazClasificadora
 def main(page: ft.Page):
     """Función de arranque principal de la interfaz Flet."""
     # 1. Lectura de variables de entorno o valores por defecto
-    ruta_modelo = os.getenv("MODEL_PATH", "best.pt")
+    ruta_default = "models/best.pt" if os.path.exists("models/best.pt") else "best.pt"
+    ruta_modelo = os.getenv("MODEL_PATH", ruta_default)
     fuente_video_raw = os.getenv("CAMERA_SOURCE", "0")
     fuente_video = int(fuente_video_raw) if fuente_video_raw.isdigit() else fuente_video_raw
     potencia_kw = float(os.getenv("HARDWARE_POWER_KW", "0.5"))

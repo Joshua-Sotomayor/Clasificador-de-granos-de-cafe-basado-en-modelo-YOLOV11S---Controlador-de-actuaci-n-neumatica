@@ -76,15 +76,26 @@ class YOLODetector:
         self._cap = None
 
     def _inicializar_modelo(self) -> None:
-        """Carga el modelo Ultralytics YOLO o activa el modo simulado si no está disponible."""
+        """Carga el modelo Ultralytics YOLO buscando en la ruta especificada o rutas estándar."""
+        import os
+        ruta_encontrada = None
+        if self.ruta_modelo and os.path.exists(self.ruta_modelo):
+            ruta_encontrada = self.ruta_modelo
+        elif self.ruta_modelo in ("best.pt", "models/best.pt", "weights/best.pt", None, ""):
+            for cand in ["models/best.pt", "best.pt", "weights/best.pt"]:
+                if os.path.exists(cand):
+                    ruta_encontrada = cand
+                    break
+
         try:
             from ultralytics import YOLO
-            import os
-            if os.path.exists(self.ruta_modelo):
-                print(f"[YOLODetector] Cargando modelo personalizado: {self.ruta_modelo}")
-                self.modelo = YOLO(self.ruta_modelo)
+            if ruta_encontrada:
+                print(f"[YOLODetector] Modelo detectado exitosamente: {ruta_encontrada}")
+                self.modelo = YOLO(ruta_encontrada)
+                self.ruta_modelo = ruta_encontrada
+                self.modo_simulado = False
             else:
-                print(f"[YOLODetector] Modelo '{self.ruta_modelo}' no encontrado. Inicializando modo demostrativo/simulado.")
+                print(f"[YOLODetector] Modelo '{self.ruta_modelo}' no encontrado. Operando en modo demostrativo/simulado.")
                 self.modo_simulado = True
         except ImportError:
             print("[YOLODetector] Ultralytics no disponible. Activando modo simulador sintético.")
@@ -137,19 +148,29 @@ class YOLODetector:
             self.iniciar()
 
     def _abrir_camara(self) -> bool:
-        """Abre la cámara o archivo de video según la configuración."""
+        """Abre la cámara o archivo de video con DirectShow en Windows para arranque instantáneo."""
         if str(self.fuente_video).lower() in ("demo", "simulado", "synthetic"):
             return True
 
         try:
-            self._cap = cv2.VideoCapture(self.fuente_video)
-            if not self._cap.isOpened():
-                print(f"[YOLODetector] No se pudo abrir la fuente {self.fuente_video}. Usando generador sintético.")
+            fuente = int(self.fuente_video) if str(self.fuente_video).isdigit() else self.fuente_video
+            if isinstance(fuente, int):
+                # En Windows, DirectShow previene bloqueos de cámara
+                self._cap = cv2.VideoCapture(fuente, cv2.CAP_DSHOW)
+                if not self._cap.isOpened():
+                    self._cap = cv2.VideoCapture(fuente)
+            else:
+                self._cap = cv2.VideoCapture(fuente)
+
+            if not self._cap or not self._cap.isOpened():
+                print(f"[YOLODetector] Cámara {self.fuente_video} no disponible. Activando generador demostrativo.")
                 self.fuente_video = "demo"
                 return True
 
             self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolucion_captura[0])
             self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolucion_captura[1])
+            self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            print(f"[YOLODetector] Cámara {fuente} inicializada correctamente ({self.resolucion_captura[0]}x{self.resolucion_captura[1]}).")
             return True
         except Exception as e:
             print(f"[YOLODetector] Error abriendo cámara ({e}). Pasando a demo.")
@@ -254,7 +275,7 @@ class YOLODetector:
         frame_anotado = frame.copy()
         detecciones = []
 
-        if self.modo_simulado or self.modelo is None:
+        if self.modo_simulado or self.modelo is None or str(self.fuente_video).lower() in ("demo", "simulado", "synthetic"):
             detecciones = self._simular_detecciones(frame.shape)
         else:
             try:
