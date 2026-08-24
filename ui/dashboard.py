@@ -96,9 +96,6 @@ class InterfazClasificadora:
         self.contenedor_feed = ft.Container(
             content=self.placeholder_video,
             alignment=ft.Alignment.CENTER,
-            bgcolor=InstitucionalTheme.BLANCO_PURO,
-            border_radius=15,
-            padding=10,
             expand=True,
             **InstitucionalTheme.estilo_tarjeta()
         )
@@ -115,11 +112,11 @@ class InterfazClasificadora:
             width=280,
             border_color=InstitucionalTheme.CAFE_CLARO,
             focused_border_color=InstitucionalTheme.VERDE_ULSA,
-            on_change=self._cambiar_fuente_video,
+            on_select=self._cambiar_fuente_video,
         )
 
         self.btn_iniciar = ft.ElevatedButton(
-            text="Iniciar Clasificación",
+            content="Iniciar Clasificación",
             icon=ft.Icons.PLAY_ARROW,
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.BLANCO_PURO,
@@ -130,7 +127,7 @@ class InterfazClasificadora:
             on_click=self._iniciar_detector,
         )
         self.btn_pausar = ft.OutlinedButton(
-            text="Pausar",
+            content="Pausar",
             icon=ft.Icons.PAUSE,
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.CAFE_TEXTO,
@@ -142,7 +139,7 @@ class InterfazClasificadora:
             disabled=True,
         )
         self.btn_detener = ft.OutlinedButton(
-            text="Detener",
+            content="Detener",
             icon=ft.Icons.STOP,
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.ROJO_DEFECTO,
@@ -200,7 +197,7 @@ class InterfazClasificadora:
 
         # Acciones de lote
         self.btn_guardar_lote = ft.ElevatedButton(
-            text="Guardar Resumen en MongoDB Atlas",
+            content="Guardar Resumen en MongoDB Atlas",
             icon=ft.Icons.CLOUD_UPLOAD_OUTLINED,
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.BLANCO_PURO,
@@ -211,7 +208,7 @@ class InterfazClasificadora:
             on_click=self._guardar_lote_mongodb,
         )
         self.btn_reiniciar_sesion = ft.OutlinedButton(
-            text="Reiniciar Estadísticas / Nuevo Lote",
+            content="Reiniciar Estadísticas / Nuevo Lote",
             icon=ft.Icons.REFRESH,
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.CAFE_TEXTO,
@@ -334,25 +331,27 @@ class InterfazClasificadora:
         )
 
         # Control de Pestañas Principal
-        tabs = ft.Tabs(
-            selected_index=0,
-            animation_duration=250,
+        tab_bar = ft.TabBar(
+            tabs=[
+                ft.Tab(label="Vista en Vivo", icon=ft.Icons.VIDEOCAM),
+                ft.Tab(label="Dashboard Analítico", icon=ft.Icons.INSERT_CHART_OUTLINED),
+            ],
+            indicator_color=InstitucionalTheme.VERDE_ULSA,
             label_color=InstitucionalTheme.VERDE_ULSA,
             unselected_label_color=InstitucionalTheme.CAFE_TEXTO,
-            indicator_color=InstitucionalTheme.VERDE_ULSA,
-            indicator_tab_size=True,
-            tabs=[
-                ft.Tab(
-                    text="Vista en Vivo",
-                    icon=ft.Icons.VIDEOCAM,
-                    content=ft.Container(content=vista_vivo_tab, padding=ft.Padding.only(top=12), expand=True),
-                ),
-                ft.Tab(
-                    text="Dashboard Analítico",
-                    icon=ft.Icons.INSERT_CHART_OUTLINED,
-                    content=ft.Container(content=dashboard_tab, padding=ft.Padding.only(top=12), expand=True),
-                ),
+        )
+
+        tab_view = ft.TabBarView(
+            controls=[
+                ft.Container(content=vista_vivo_tab, padding=ft.Padding.only(top=12), expand=True),
+                ft.Container(content=dashboard_tab, padding=ft.Padding.only(top=12), expand=True),
             ],
+            expand=True,
+        )
+
+        tabs = ft.Tabs(
+            content=ft.Column(controls=[tab_bar, tab_view], expand=True),
+            length=2,
             expand=True,
         )
 
@@ -490,12 +489,12 @@ class InterfazClasificadora:
         if self.detector._pausado:
             self.detector.reanudar()
             self.metricas.iniciar_sesion()
-            self.btn_pausar.text = "Pausar"
+            self.btn_pausar.content = "Pausar"
             self.btn_pausar.icon = ft.Icons.PAUSE
         else:
             self.detector.pausar()
             self.metricas.pausar_sesion()
-            self.btn_pausar.text = "Reanudar"
+            self.btn_pausar.content = "Reanudar"
             self.btn_pausar.icon = ft.Icons.PLAY_ARROW
         self.page.update()
 
@@ -514,7 +513,7 @@ class InterfazClasificadora:
     def _cambiar_fuente_video(self, e) -> None:
         """Actualiza la fuente de video del detector."""
         valor = self.dropdown_fuente.value
-        nueva_fuente = int(valor) if valor.isdigit() else valor
+        nueva_fuente = int(valor) if str(valor).isdigit() else valor
         self.detector.cambiar_fuente(nueva_fuente)
 
     def _guardar_lote_mongodb(self, e) -> None:

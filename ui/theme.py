@@ -88,7 +88,7 @@ class InstitucionalTheme:
     def boton_primario(texto: str, icono: str = None, on_click = None) -> ft.ElevatedButton:
         """Botón principal con Verde ULSA institucional."""
         return ft.ElevatedButton(
-            text=texto,
+            content=texto,
             icon=icono,
             on_click=on_click,
             style=ft.ButtonStyle(
@@ -103,7 +103,7 @@ class InstitucionalTheme:
     def boton_secundario(texto: str, icono: str = None, on_click = None) -> ft.OutlinedButton:
         """Botón secundario con borde café."""
         return ft.OutlinedButton(
-            text=texto,
+            content=texto,
             icon=icono,
             on_click=on_click,
             style=ft.ButtonStyle(
