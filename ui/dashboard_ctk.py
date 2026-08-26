@@ -499,8 +499,8 @@ class DashboardCustomTkinter(ctk.CTk):
     # --- Manejadores de Eventos ---
 
     def _iniciar_clasificacion(self) -> None:
-        """Inicia la sesión activa de clasificación."""
-        self.detector.iniciar()
+        """Inicia la sesión activa de clasificación con YOLO."""
+        self.detector.iniciar_clasificacion()
         self.metricas.iniciar_sesion()
         self.btn_iniciar.configure(state="disabled")
         self.btn_pausar.configure(state="normal", text="⏸ Pausar")
@@ -519,11 +519,11 @@ class DashboardCustomTkinter(ctk.CTk):
             self.btn_pausar.configure(text="▶ Reanudar")
 
     def _detener_clasificacion(self) -> None:
-        """Detiene la sesión de clasificación."""
-        self.detector.pausar()
+        """Detiene la sesión de clasificación volviendo al modo preview."""
+        self.detector.detener_clasificacion()
         self.metricas.pausar_sesion()
         self.btn_iniciar.configure(state="normal")
-        self.btn_pausar.configure(state="disabled")
+        self.btn_pausar.configure(state="disabled", text="⏸ Pausar")
         self.btn_detener.configure(state="disabled")
         self.opt_fuente.configure(state="normal")
 

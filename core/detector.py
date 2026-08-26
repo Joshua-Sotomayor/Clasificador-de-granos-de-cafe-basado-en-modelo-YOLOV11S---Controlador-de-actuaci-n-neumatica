@@ -66,6 +66,7 @@ class YOLODetector:
         self._ejecutando = False
         self._pausado = False
         self.clasificacion_activa = False
+        self._solicitud_cambio_fuente: Optional[Union[int, str]] = None
         self._lock = threading.RLock()
 
         # Modelo YOLO
@@ -114,16 +115,17 @@ class YOLODetector:
             self.modo_simulado = True
 
     def iniciar(self) -> bool:
-        """Inicia los hilos de captura e inferencia continua."""
+        """
+        Inicia los hilos de captura de video para visualización en vivo (modo preview).
+        La inferencia del modelo YOLO permanece en espera hasta llamar a iniciar_clasificacion().
+        """
         with self._lock:
             if self._ejecutando:
-                self.clasificacion_activa = True
-                self._pausado = False
                 return True
 
             self._ejecutando = True
             self._pausado = False
-            self.clasificacion_activa = True
+            self.clasificacion_activa = False
 
             # Iniciar hilo 1: Captura de Video continua a 30 FPS
             self._hilo_captura = threading.Thread(
@@ -133,7 +135,7 @@ class YOLODetector:
             )
             self._hilo_captura.start()
 
-            # Iniciar hilo 2: Inferencia YOLO en paralelo
+            # Iniciar hilo 2: Inferencia YOLO en paralelo (en espera de activación)
             self._hilo_inferencia = threading.Thread(
                 target=self._bucle_inferencia_yolo,
                 daemon=True,
@@ -142,18 +144,33 @@ class YOLODetector:
             self._hilo_inferencia.start()
             return True
 
+    def iniciar_clasificacion(self) -> None:
+        """Activa la inferencia del modelo YOLO y la clasificación continua."""
+        with self._lock:
+            self.clasificacion_activa = True
+            self._pausado = False
+
     def pausar(self) -> None:
-        """Pausa la clasificación y acumulación de estadísticas."""
+        """Pausa la clasificación y detiene la inferencia de YOLO (mantiene preview de cámara)."""
         with self._lock:
             self.clasificacion_activa = False
+            self._ultimas_detecciones = []
+            self._latencia_inferencia_ms = 0.0
 
     def reanudar(self) -> None:
-        """Reanuda la clasificación activa."""
+        """Reanuda la clasificación activa con YOLO."""
         with self._lock:
             self.clasificacion_activa = True
 
+    def detener_clasificacion(self) -> None:
+        """Detiene la clasificación activa volviendo al modo preview."""
+        with self._lock:
+            self.clasificacion_activa = False
+            self._ultimas_detecciones = []
+            self._latencia_inferencia_ms = 0.0
+
     def detener(self) -> None:
-        """Detiene completamente la captura y libera el hardware."""
+        """Detiene completamente la captura y libera el hardware de la cámara."""
         with self._lock:
             self._ejecutando = False
             self._pausado = False
@@ -167,15 +184,17 @@ class YOLODetector:
         self._liberar_camara()
 
     def cambiar_fuente(self, nueva_fuente: Union[int, str]) -> None:
-        """Alterna la fuente de video en caliente."""
+        """
+        Solicita el cambio de fuente de video de forma segura y thread-safe
+        para evitar colisiones con el hilo de captura OpenCV.
+        """
         with self._lock:
-            self._liberar_camara()
-            self.fuente_video = nueva_fuente
-            self._abrir_camara()
+            self._solicitud_cambio_fuente = nueva_fuente
 
     def _abrir_camara(self) -> bool:
         """Abre la cámara web o archivo con backend DirectShow en Windows para latencia cero."""
         if str(self.fuente_video).lower() in ("demo", "simulado", "synthetic"):
+            print("[YOLODetector] Modo Simulación (Demo) seleccionado.")
             return True
 
         try:
@@ -195,15 +214,15 @@ class YOLODetector:
             self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolucion_captura[0])
             self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolucion_captura[1])
             self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            print(f"[YOLODetector] Cámara {fuente} activa.")
+            print(f"[YOLODetector] Cámara {fuente} abierta exitosamente.")
             return True
         except Exception as e:
-            print(f"[YOLODetector] Error en cámara ({e}). Usando modo demo.")
+            print(f"[YOLODetector] Error al abrir cámara ({e}). Usando modo demo.")
             self.fuente_video = "demo"
             return True
 
     def _liberar_camara(self) -> None:
-        """Libera los recursos de la cámara."""
+        """Libera los recursos de la cámara con seguridad."""
         if self._cap is not None:
             try:
                 self._cap.release()
@@ -213,12 +232,24 @@ class YOLODetector:
 
     def _bucle_captura_video(self) -> None:
         """
-        Hilo 1: Adquiere frames a alta frecuencia (~30 FPS), dibuja cajas y despacha a la UI.
+        Hilo 1: Adquiere frames a alta frecuencia (~30-60 FPS), aplica anotaciones si está
+        activa la clasificación y despacha a la cola de la UI.
         """
         self._abrir_camara()
         ultimo_tiempo = time.perf_counter()
 
         while self._ejecutando:
+            # 0. Atender solicitudes de cambio de cámara en caliente de forma segura
+            if self._solicitud_cambio_fuente is not None:
+                with self._lock:
+                    nueva = self._solicitud_cambio_fuente
+                    self._solicitud_cambio_fuente = None
+                    self._liberar_camara()
+                    self.fuente_video = nueva
+                    self._abrir_camara()
+                    self._ultimas_detecciones = []
+                    self._latencia_inferencia_ms = 0.0
+
             t_inicio = time.perf_counter()
 
             # 1. Leer frame
@@ -232,8 +263,12 @@ class YOLODetector:
             # Guardar frame para el hilo de inferencia
             with self._lock:
                 self._frame_reciente = frame.copy()
-                detecciones_actuales = list(self._ultimas_detecciones)
-                latencia_ms = self._latencia_inferencia_ms
+                if self.clasificacion_activa:
+                    detecciones_actuales = list(self._ultimas_detecciones)
+                    latencia_ms = self._latencia_inferencia_ms
+                else:
+                    detecciones_actuales = []
+                    latencia_ms = 0.0
 
             # 2. Calcular FPS de la cámara
             t_ahora = time.perf_counter()
@@ -242,8 +277,11 @@ class YOLODetector:
             fps = 1.0 / max(delta, 1e-4)
             self._fps_captura = fps
 
-            # 3. Dibujar cajas de detección en el frame vivo
-            frame_anotado = self._dibujar_detecciones(frame, detecciones_actuales)
+            # 3. Dibujar cajas de detección (solo si la clasificación está activa)
+            if self.clasificacion_activa and detecciones_actuales:
+                frame_anotado = self._dibujar_detecciones(frame, detecciones_actuales)
+            else:
+                frame_anotado = frame.copy()
 
             # 4. Telemetría y estado de válvula
             hay_defectos = any(d.get("es_defecto", False) for d in detecciones_actuales)
@@ -287,9 +325,17 @@ class YOLODetector:
 
     def _bucle_inferencia_yolo(self) -> None:
         """
-        Hilo 2: Ejecuta inferencia YOLO en paralelo sin bloquear la captura de video.
+        Hilo 2: Ejecuta inferencia YOLO en paralelo únicamente cuando la clasificación está activa.
+        En modo vista previa (preview), se suspende para no consumir CPU/GPU y permitir streaming limpio.
         """
         while self._ejecutando:
+            if not self.clasificacion_activa:
+                with self._lock:
+                    self._ultimas_detecciones = []
+                    self._latencia_inferencia_ms = 0.0
+                time.sleep(0.05)
+                continue
+
             frame_para_inferir = None
             with self._lock:
                 if self._frame_reciente is not None:
@@ -389,16 +435,22 @@ class YOLODetector:
         """Dibuja la barra de telemetría superior."""
         h, w, _ = frame.shape
         overlay = frame.copy()
-        cv2.rectangle(overlay, (0, 0), (w, 36), (40, 30, 25), -1)
+        cv2.rectangle(overlay, (0, 0), (w, 36), (30, 25, 20), -1)
         cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
 
-        texto = f"FPS: {fps:.1f} | Latencia: {latencia_ms:.1f}ms | Granos: {total_granos}"
-        cv2.putText(frame, texto, (12, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 1, cv2.LINE_AA)
+        if self.clasificacion_activa:
+            texto = f"FPS: {fps:.1f} | Latencia: {latencia_ms:.1f}ms | Granos: {total_granos}"
+            color_valvula = (0, 220, 0) if valvula_activa else (120, 120, 120)
+            estado_valvula = "VALVULA: DISPARO" if valvula_activa else "VALVULA: STANDBY"
+        else:
+            texto = f"FPS: {fps:.1f} | MODO: VISTA PREVIA (Inferencia en Espera)"
+            color_valvula = (120, 120, 120)
+            estado_valvula = "VALVULA: STANDBY"
 
-        color_valvula = (0, 220, 0) if valvula_activa else (120, 120, 120)
-        estado_valvula = "VALVULA: DISPARO" if valvula_activa else "VALVULA: STANDBY"
+        cv2.putText(frame, texto, (12, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1, cv2.LINE_AA)
         cv2.circle(frame, (w - 170, 18), 6, color_valvula, -1)
         cv2.putText(frame, estado_valvula, (w - 155, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (220, 220, 220), 1, cv2.LINE_AA)
+
 
     def _generar_frame_sintetico(self) -> np.ndarray:
         """Genera un fondo sintético animado para pruebas sin cámara."""

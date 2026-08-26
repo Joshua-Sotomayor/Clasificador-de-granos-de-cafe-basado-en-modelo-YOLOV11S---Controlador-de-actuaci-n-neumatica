@@ -551,12 +551,14 @@ class InterfazClasificadora:
     # --- Manejadores de Eventos ---
 
     def _iniciar_clasificacion(self, e) -> None:
-        """Inicia la sesión activa de clasificación y cronometraje."""
-        self.detector.iniciar()
+        """Inicia la sesión activa de clasificación y cronometraje con YOLO."""
+        self.detector.iniciar_clasificacion()
         self.metricas.iniciar_sesion()
 
         self.btn_iniciar.disabled = True
         self.btn_pausar.disabled = False
+        self.btn_pausar.content = "Pausar"
+        self.btn_pausar.icon = ft.Icons.PAUSE
         self.btn_detener.disabled = False
         self.dropdown_fuente.disabled = True
         self.page.update()
@@ -576,12 +578,14 @@ class InterfazClasificadora:
         self.page.update()
 
     def _detener_clasificacion(self, e) -> None:
-        """Detiene la sesión de clasificación."""
-        self.detector.pausar()
+        """Detiene la sesión de clasificación volviendo al modo preview."""
+        self.detector.detener_clasificacion()
         self.metricas.pausar_sesion()
 
         self.btn_iniciar.disabled = False
         self.btn_pausar.disabled = True
+        self.btn_pausar.content = "Pausar"
+        self.btn_pausar.icon = ft.Icons.PAUSE
         self.btn_detener.disabled = True
         self.dropdown_fuente.disabled = False
         self.page.update()
