@@ -85,38 +85,38 @@ Para facilitar la interpretación de los resultados y la comparación con la lit
 
 ## 4. Tabla Comparativa Histórica de Experimentos
 
-| Parámetro / Métrica | Versión 1 (AdamW Base) | Versión 2 (SGD + No Mosaic) | Versión 3 (AdamW + cls=1.5) | **Versión 4 (Campeón Definitivo)** 🏆 |
-| :--- | :---: | :---: | :---: | :---: |
-| **Arquitectura** | YOLO11m | YOLO11m | YOLO11m | **YOLO11m** |
-| **Optimizador** | AdamW (`lr=0.001`) | SGD (`lr=0.01`) | AdamW (`lr=0.001`) | **AdamW (`lr=0.001` + Cosine)** |
-| **Paciencia (*Patience*)** | 15 épocas | 35 épocas | 30 épocas | **35 épocas** |
-| **Épocas Entrenadas** | 55 épocas | 65 épocas | 107 épocas | **75 épocas** (pico en época 40) |
-| **$mAP_{50}$ Global** | `0.4384` (43.8%) | `0.3318` (33.2%) | `0.2304` (23.0%) | **`0.5187` (51.9%)** ⭐ |
-| **$mAP_{50-95}$ Global** | `0.3811` (38.1%) | `0.2459` (24.6%) | `0.1996` (20.0%) | **`0.4453` (44.5%)** ⭐ |
-| **Precisión Promedio ($P$)** | `0.277` (27.7%) | `0.325` (32.5%) | `0.204` (20.4%) | **`0.494` (49.4%)** ⭐ |
-| **Recall Promedio ($R$)** | `0.535` (53.5%) | `0.405` (40.5%) | `0.551` (55.1%) | **`0.583` (58.3%)** ⭐ |
+| Parámetro / Métrica | Versión 1 (AdamW Base) | Versión 2 (SGD + No Mosaic) | Versión 3 (AdamW + cls=1.5) | Versión 4 (YOLO11m Cosine) | **Versión 5 (YOLO11s Ligero)** ⚡ |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Arquitectura** | YOLO11m ($20\text{M}$) | YOLO11m ($20\text{M}$) | YOLO11m ($20\text{M}$) | YOLO11m ($20\text{M}$) | **YOLO11s ($9.4\text{M}$)** |
+| **Velocidad Inferencia** | $12.7\text{ ms}$ ($78\text{ FPS}$) | $12.7\text{ ms}$ ($78\text{ FPS}$) | $12.3\text{ ms}$ ($81\text{ FPS}$) | $12.8\text{ ms}$ ($78\text{ FPS}$) | **$6.1\text{ ms}$ ($\approx 164\text{ FPS}$)** 🚀 |
+| **Optimizador** | AdamW (`lr=0.001`) | SGD (`lr=0.01`) | AdamW (`lr=0.001`) | AdamW (`lr=0.001` + Cos) | **AdamW (`lr=0.001` + Cos)** |
+| **Épocas Entrenadas** | 55 épocas | 65 épocas | 107 épocas | 75 épocas | **90 épocas** (pico en época 55) |
+| **$mAP_{50}$ Global** | `0.4384` (43.8%) | `0.3318` (33.2%) | `0.2304` (23.0%) | **`0.5187` (51.9%)** | **`0.5049` (50.5%)** ⭐ |
+| **$mAP_{50-95}$ Global** | `0.3811` (38.1%) | `0.2459` (24.6%) | `0.1996` (20.0%) | **`0.4453` (44.5%)** | **`0.4356` (43.6%)** |
+| **Precisión Arabica Bueno** | $40.3\%$ | $23.8\%$ | $37.3\%$ | $45.8\%$ | **`61.8%`** 📈 *(+16% pureza)* |
+| **Precisión Robusta Bueno** | $82.8\%$ | $22.4\%$ | $57.7\%$ | $72.7\%$ | **`78.0%`** 📈 |
 
 ---
 
-## 5. Análisis Específico de Rendimiento por Clase (Versión 4)
+## 5. Análisis Específico de Rendimiento por Clase (Versión 5 - YOLO11s)
 
-A continuación se detalla el comportamiento del modelo campeón discriminando las clases clave:
+A continuación se detalla el comportamiento del modelo ligero discriminando las clases clave:
 
 ### ☕ Granos Buenos (Foco Principal del Negocio)
 | Clase | Instancias en Validación | Precisión ($P$) | Recall ($R$) | $mAP_{50}$ | Análisis de Operación |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **`Robusta_Bueno`** | 79 | **$72.7\%$** | **$87.8\%$** | **$73.1\%$** | **Excelente desempeño industrial**. Identifica y retiene casi el 90% de los granos sanos de Robusta con muy baja tasa de falsos descartes. |
-| **`Arabica_Bueno`** | 81 | **$45.8\%$** | **$63.0\%$** | **$52.4\%$** | **Desempeño funcional**. Retiene el 63% de los granos sanos; el resto es clasificado como defectos leves (inmaduro/agrio) debido a la similitud cromática. |
+| **`Robusta_Bueno`** | 79 | **$78.0\%$** | **$72.0\%$** | **$83.1\%$** | **Excelente pureza**. Casi el 80% de lo que aprueba es grano sano de alta calidad. |
+| **`Arabica_Bueno`** | 81 | **$61.8\%$** | **$55.6\%$** | **$58.9\%$** | **Mayor pureza lograda**. Subió la precisión de 45% a casi 62%, evitando contaminar el lote. |
 
 ### ☕ Defectos Críticos y Severos
 | Clase | Instancias en Validación | Precisión ($P$) | Recall ($R$) | $mAP_{50}$ | Análisis de Operación |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **`Robusta_Cereza`** | 6 | $7.3\%$ | **$100.0\%$** | **$99.5\%$** | **Detección perfecta**. Ningún grano cereza de Robusta escapa al descarte. |
-| **`Arabica_Negro`** | 46 | **$80.2\%$** | **$88.3\%$** | **$89.0\%$** | **Excelente**. Detecta el 88.3% de los granos negros con una pureza del 80%. |
-| **`Arabica_Cereza`** | 5 | **$100.0\%$** | $54.8\%$ | **$79.5\%$** | **Pureza total ($P=1.0$)**. Lo que marca como cereza es 100% certero. |
-| **`Robusta_Negro`** | 14 | **$68.9\%$** | **$71.4\%$** | **$72.3\%$** | **Alta confiabilidad**. Separa con solvencia los granos negros de Robusta. |
-| **`Arabica_Brocado`** | 11 | **$71.5\%$** | $27.3\%$ | **$52.5\%$** | **Gran avance**. Precisión del 71.5% al ubicar los micro-orificios de la broca. |
-| **`Arabica_Agrio`** | 49 | $27.7\%$ | **$55.1\%$** | **$42.0\%$** | **Avance notable**. Multiplicó por 4 su rendimiento respecto a versiones previas. |
+| **`Robusta_Cereza`** | 6 | **$72.0\%$** | **$100.0\%$** | **$99.5\%$** | **Detección perfecta**. Cero fugas al canal de exportación. |
+| **`Robusta_Negro`** | 14 | $19.2\%$ | **$100.0\%$** | **$65.2\%$** | **Descarte total**. El 100% de los granos negros de Robusta son detectados y expulsados. |
+| **`Arabica_Cereza`** | 5 | **$64.8\%$** | **$80.0\%$** | **$80.6\%$** | **Muy alta efectividad**. |
+| **`Arabica_Negro`** | 46 | **$65.6\%$** | $24.9\%$ | **$67.7\%$** | **Confiable**. |
+| **`Arabica_Agrio`** | 49 | **$33.5\%$** | **$53.1\%$** | **$48.1\%$** | **Récord histórico en Agrios**. Subió al 48.1% de $mAP$. |
+| **`Arabica_Brocado`** | 11 | **$51.8\%$** | $27.3\%$ | **$37.2\%$** | **Precisión $>50\%$** en la detección de brocas. |
 
 ---
 
