@@ -335,6 +335,28 @@ class GestorDataset:
             os.makedirs(os.path.join(self.configuracion.directorio_salida, "images", particion), exist_ok=True)
             os.makedirs(os.path.join(self.configuracion.directorio_salida, "labels", particion), exist_ok=True)
 
+    def generar_archivo_yaml(self) -> str:
+        """
+        Genera el archivo data.yaml requerido por YOLO dentro del directorio de salida.
+
+        :return: Ruta al archivo data.yaml generado.
+        """
+        ruta_yaml = os.path.join(self.configuracion.directorio_salida, "data.yaml")
+        id_a_nombre = {v: k for k, v in self.configuracion.mapeo_nombres_a_ids.items()}
+        
+        with open(ruta_yaml, "w", encoding="utf-8") as f:
+            f.write(f"# Configuración del Dataset para YOLO (Finca Alvizua - {self.configuracion.tamano_objetivo}px)\n")
+            f.write(f"path: {os.path.basename(self.configuracion.directorio_salida)}\n")
+            f.write("train: images/train\n")
+            f.write("val: images/val\n\n")
+            f.write(f"nc: {len(id_a_nombre)}\n\n")
+            f.write("names:\n")
+            for id_clase in sorted(id_a_nombre.keys()):
+                f.write(f"  {id_clase}: {id_a_nombre[id_clase]}\n")
+
+        print(f"[*] Archivo de configuración generado: {ruta_yaml}")
+        return ruta_yaml
+
     def ejecutar_pipeline(self) -> Dict[str, Any]:
         """
         Ejecuta el pipeline completo de preprocesamiento, particionado y aumento de datos balanceado.
@@ -404,7 +426,7 @@ class GestorDataset:
                 # c) Aplicar autocontraste CLAHE
                 imagen_contrastada = self.procesador.aplicar_autocontraste(imagen_bgr)
 
-                # d) Aplicar padding simétrico y redimensionar a 640x640 recalculando cajas YOLO
+                # d) Aplicar padding simétrico y redimensionar recalculando cajas YOLO
                 imagen_final, cajas_finales = self.procesador.aplicar_relleno_y_redimensionar(
                     imagen=imagen_contrastada,
                     cajas_delimitadoras=cajas_originales,
@@ -460,6 +482,9 @@ class GestorDataset:
                             self.guardar_etiquetas_yolo(ruta_aum_lbl, var["cajas"], var["etiquetas"])
                             estadisticas["muestras_aumentadas_generadas"] += 1
 
+        # 6. Generar data.yaml automáticamente
+        self.generar_archivo_yaml()
+
         print("\n" + "=" * 60)
         print("  PIPELINE COMPLETADO CON ÉXITO")
         print("=" * 60)
@@ -471,7 +496,8 @@ class GestorDataset:
             sum(estadisticas["imagenes_procesadas_por_particion"].values())
             + estadisticas["muestras_aumentadas_generadas"]
         )
-        print(f"  - Total general de imágenes en dataset_yolo: {total_final}")
+        print(f"  - Total general de imágenes en {self.configuracion.directorio_salida}: {total_final}")
         print("=" * 60)
 
         return estadisticas
+

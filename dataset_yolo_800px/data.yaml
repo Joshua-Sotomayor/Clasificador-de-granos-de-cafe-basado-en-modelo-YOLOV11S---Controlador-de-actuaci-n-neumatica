@@ -1,0 +1,21 @@
+# Configuración del Dataset para YOLO (Finca Alvizua - 800px)
+path: dataset_yolo_800px
+train: images/train
+val: images/val
+
+nc: 13
+
+names:
+  0: Arabica_Agrio
+  1: Arabica_Brocado
+  2: Arabica_Bueno
+  3: Arabica_Cereza
+  4: Arabica_Concha
+  5: Arabica_Inmaduro
+  6: Arabica_Negro
+  7: Arabica_Quebrado
+  8: Robusta_Brocado
+  9: Robusta_Bueno
+  10: Robusta_Cereza
+  11: Robusta_Negro
+  12: Robusta_Quebrado

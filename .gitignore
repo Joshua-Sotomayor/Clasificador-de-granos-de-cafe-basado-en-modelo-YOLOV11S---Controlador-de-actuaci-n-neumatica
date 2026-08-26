@@ -15,6 +15,8 @@ __pycache__/
 dataset_bruto/
 dataset_yolo/images/
 dataset_yolo/labels/
+dataset_yolo_800px/images/
+dataset_yolo_800px/labels/
 
 # Archivos del sistema operativo
 .DS_Store
