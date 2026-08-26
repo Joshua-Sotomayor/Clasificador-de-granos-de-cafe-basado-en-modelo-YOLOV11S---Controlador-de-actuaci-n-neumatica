@@ -1,7 +1,7 @@
 """
-Punto de Entrada Principal del Dashboard de Inferencia y Telemetría
-Lanza la aplicación Flet integrando el Productor (YOLODetector),
-el Consumidor (InterfazClasificadora) y la capa de almacenamiento (MongoManager).
+Punto de Entrada Principal del Dashboard de Inferencia y Telemetría MOPPI
+Ejecuta la interfaz nativa en CustomTkinter para streaming ultra-fluido (30-60 FPS)
+sin congelamientos, y permite usar Flet mediante el argumento --flet si se desea.
 """
 
 import os
@@ -11,16 +11,13 @@ from dotenv import load_dotenv
 # Cargar variables de entorno si existen
 load_dotenv()
 
-import flet as ft
 from core.detector import YOLODetector
 from core.metricas import GestorMetricas
 from storage.database import MongoManager
-from ui.dashboard import InterfazClasificadora
 
 
-def main(page: ft.Page):
-    """Función de arranque principal de la interfaz Flet."""
-    # 1. Lectura de variables de entorno o valores por defecto
+def main():
+    """Función de arranque principal."""
     ruta_default = "models/best.pt" if os.path.exists("models/best.pt") else "best.pt"
     ruta_modelo = os.getenv("MODEL_PATH", ruta_default)
     fuente_video_raw = os.getenv("CAMERA_SOURCE", "0")
@@ -36,7 +33,7 @@ def main(page: ft.Page):
     print(f"Potencia Nominal: {potencia_kw} kW")
     print("=" * 60)
 
-    # 2. Inicialización de componentes desacoplados
+    # 1. Inicialización de componentes desacoplados
     metricas = GestorMetricas(potencia_nominal_kw=potencia_kw)
     detector = YOLODetector(
         ruta_modelo=ruta_modelo,
@@ -45,14 +42,34 @@ def main(page: ft.Page):
     )
     db_manager = MongoManager(uri_mongo=mongo_uri)
 
-    # 3. Lanzar interfaz gráfica
-    app_interfaz = InterfazClasificadora(
-        page=page,
-        detector=detector,
-        metricas=metricas,
-        db_manager=db_manager,
-    )
+    # 2. Lanzar interfaz gráfica
+    if "--flet" in sys.argv:
+        print("[MOPPI] Iniciando interfaz Flet...")
+        import flet as ft
+        from ui.dashboard import InterfazClasificadora
+
+        def flet_entry(page: ft.Page):
+            InterfazClasificadora(
+                page=page,
+                detector=detector,
+                metricas=metricas,
+                db_manager=db_manager,
+            )
+
+        if hasattr(ft, "run"):
+            ft.run(flet_entry)
+        else:
+            ft.app(target=flet_entry)
+    else:
+        print("[MOPPI] Iniciando interfaz nativa CustomTkinter (30-60 FPS)...")
+        from ui.dashboard_ctk import DashboardCustomTkinter
+        app = DashboardCustomTkinter(
+            detector=detector,
+            metricas=metricas,
+            db_manager=db_manager,
+        )
+        app.mainloop()
 
 
 if __name__ == "__main__":
-    ft.app(target=main)
+    main()

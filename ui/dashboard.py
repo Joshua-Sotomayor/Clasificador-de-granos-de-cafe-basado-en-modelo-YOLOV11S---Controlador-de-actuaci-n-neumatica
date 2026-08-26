@@ -4,11 +4,9 @@ Implementa el Dashboard con pestañas 'Vista en Vivo' y 'Panel Analítico',
 conectado al detector YOLO y al gestor de métricas en tiempo real.
 """
 
-import os
 import time
 import queue
 import threading
-import tempfile
 import flet as ft
 from typing import Optional
 
@@ -51,20 +49,6 @@ class InterfazClasificadora:
         self._hilo_consumidor_activo = True
         self._hilo_consumidor: Optional[threading.Thread] = None
 
-        # Doble búfer de archivos JPEG para streaming fluido de video.
-        # Flet no refresca ft.Image si el src no cambia de valor,
-        # y enviar data URIs base64 satura el WebSocket interno.
-        # Solución: escribir frames a disco y pasar solo la ruta (cadena corta).
-        self._temp_dir = tempfile.mkdtemp(prefix="moppi_video_")
-        self._frame_paths = [
-            os.path.join(self._temp_dir, "frame_a.jpg"),
-            os.path.join(self._temp_dir, "frame_b.jpg"),
-        ]
-        self._frame_idx = 0
-        # Crear archivos vacíos iniciales
-        for p in self._frame_paths:
-            with open(p, "wb") as f:
-                f.write(b"")
 
         self._construir_componentes()
         self._construir_interfaz()
@@ -90,9 +74,10 @@ class InterfazClasificadora:
         )
 
         # --- Pestaña 1: Vista en Vivo ---
+        placeholder_src = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
         self.img_video = ft.Image(
-            src="",
-            fit=ft.BoxFit.CONTAIN,
+            src=placeholder_src,
+            fit="contain",
             width=700,
             height=480,
             border_radius=10,
@@ -101,25 +86,28 @@ class InterfazClasificadora:
 
         self.contenedor_feed = ft.Container(
             content=self.img_video,
-            alignment=ft.Alignment.CENTER,
+            alignment=InstitucionalTheme.align_center(),
             expand=True,
             **InstitucionalTheme.estilo_tarjeta()
         )
 
         # Controles y Telemetría de Vista en Vivo
-        self.dropdown_fuente = ft.Dropdown(
-            label="Seleccionar Cámara / Fuente",
-            value=str(self.detector.fuente_video),
-            options=[
+        dropdown_kwargs = {
+            "label": "Seleccionar Cámara / Fuente",
+            "value": str(self.detector.fuente_video),
+            "options": [
                 ft.dropdown.Option("0", "Cámara Web Principal (ID: 0)"),
                 ft.dropdown.Option("1", "Cámara Secundaria (ID: 1)"),
                 ft.dropdown.Option("demo", "Modo Simulación (Banda Sintética)"),
             ],
-            border_color=InstitucionalTheme.CAFE_CLARO,
-            focused_border_color=InstitucionalTheme.VERDE_ULSA,
-            on_select=self._cambiar_fuente_video,
-            expand=True,
-        )
+            "border_color": InstitucionalTheme.CAFE_CLARO,
+            "focused_border_color": InstitucionalTheme.VERDE_ULSA,
+            "expand": True,
+        }
+        try:
+            self.dropdown_fuente = ft.Dropdown(on_select=self._cambiar_fuente_video, **dropdown_kwargs)
+        except TypeError:
+            self.dropdown_fuente = ft.Dropdown(on_change=self._cambiar_fuente_video, **dropdown_kwargs)
 
         self.btn_iniciar = ft.ElevatedButton(
             content="Iniciar Clasificación",
@@ -127,7 +115,7 @@ class InterfazClasificadora:
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.BLANCO_PURO,
                 bgcolor=InstitucionalTheme.VERDE_ULSA,
-                padding=ft.Padding.symmetric(horizontal=18, vertical=12),
+                padding=InstitucionalTheme.pad_symmetric(horizontal=18, vertical=12),
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
             on_click=self._iniciar_clasificacion,
@@ -139,7 +127,7 @@ class InterfazClasificadora:
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.CAFE_TEXTO,
                 side=ft.BorderSide(1.5, InstitucionalTheme.CAFE_TEXTO),
-                padding=ft.Padding.symmetric(horizontal=14, vertical=10),
+                padding=InstitucionalTheme.pad_symmetric(horizontal=14, vertical=10),
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
             on_click=self._pausar_clasificacion,
@@ -152,7 +140,7 @@ class InterfazClasificadora:
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.ROJO_DEFECTO,
                 side=ft.BorderSide(1.5, InstitucionalTheme.ROJO_DEFECTO),
-                padding=ft.Padding.symmetric(horizontal=14, vertical=10),
+                padding=InstitucionalTheme.pad_symmetric(horizontal=14, vertical=10),
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
             on_click=self._detener_clasificacion,
@@ -211,7 +199,7 @@ class InterfazClasificadora:
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.BLANCO_PURO,
                 bgcolor=InstitucionalTheme.VERDE_ULSA,
-                padding=ft.Padding.symmetric(horizontal=20, vertical=12),
+                padding=InstitucionalTheme.pad_symmetric(horizontal=20, vertical=12),
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
             on_click=self._guardar_lote_mongodb,
@@ -222,7 +210,7 @@ class InterfazClasificadora:
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.CAFE_TEXTO,
                 side=ft.BorderSide(1.5, InstitucionalTheme.CAFE_TEXTO),
-                padding=ft.Padding.symmetric(horizontal=16, vertical=10),
+                padding=InstitucionalTheme.pad_symmetric(horizontal=16, vertical=10),
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
             on_click=self._reiniciar_estadisticas,
@@ -247,8 +235,8 @@ class InterfazClasificadora:
             ),
             bgcolor=InstitucionalTheme.BLANCO_FONDO,
             border_radius=10,
-            padding=ft.Padding.symmetric(horizontal=12, vertical=8),
-            border=ft.Border.all(1, InstitucionalTheme.CAFE_CLARO),
+            padding=InstitucionalTheme.pad_symmetric(horizontal=12, vertical=8),
+            border=InstitucionalTheme.border_all(1, InstitucionalTheme.CAFE_CLARO),
         )
 
     def _construir_interfaz(self) -> None:
@@ -394,28 +382,9 @@ class InterfazClasificadora:
         )
 
         # Pestañas
-        tab_bar = ft.TabBar(
-            tabs=[
-                ft.Tab(label="Vista en Vivo", icon=ft.Icons.VIDEOCAM),
-                ft.Tab(label="Dashboard Analítico", icon=ft.Icons.INSERT_CHART_OUTLINED),
-            ],
-            indicator_color=InstitucionalTheme.VERDE_ULSA,
-            label_color=InstitucionalTheme.VERDE_ULSA,
-            unselected_label_color=InstitucionalTheme.CAFE_TEXTO,
-        )
-
-        tab_view = ft.TabBarView(
-            controls=[
-                ft.Container(content=vista_vivo_tab, padding=ft.Padding.only(top=12), expand=True),
-                ft.Container(content=dashboard_tab, padding=ft.Padding.only(top=12), expand=True),
-            ],
-            expand=True,
-        )
-
-        tabs = ft.Tabs(
-            content=ft.Column(controls=[tab_bar, tab_view], expand=True),
-            length=2,
-            expand=True,
+        tabs = self._construir_tabs_compatibles(
+            vista_vivo_tab=vista_vivo_tab,
+            dashboard_tab=dashboard_tab,
         )
 
         self.page.add(
@@ -429,6 +398,53 @@ class InterfazClasificadora:
             )
         )
 
+    def _construir_tabs_compatibles(self, vista_vivo_tab: ft.Control, dashboard_tab: ft.Control) -> ft.Control:
+        """Construye el control de pestañas universalmente compatible con todas las versiones de Flet."""
+        c1 = ft.Container(content=vista_vivo_tab, padding=InstitucionalTheme.pad_only(top=12), expand=True)
+        c2 = ft.Container(content=dashboard_tab, padding=InstitucionalTheme.pad_only(top=12), expand=True)
+
+        # Intento 1: Arquitectura Flet 0.8x (TabBar + TabBarView + Tabs con content y length)
+        if hasattr(ft, "TabBar") and hasattr(ft, "TabBarView"):
+            try:
+                tab_bar = ft.TabBar(
+                    tabs=[
+                        ft.Tab(label="Vista en Vivo", icon=ft.Icons.VIDEOCAM),
+                        ft.Tab(label="Dashboard Analítico", icon=ft.Icons.INSERT_CHART_OUTLINED),
+                    ],
+                    indicator_color=InstitucionalTheme.VERDE_ULSA,
+                    label_color=InstitucionalTheme.VERDE_ULSA,
+                    unselected_label_color=InstitucionalTheme.CAFE_TEXTO,
+                )
+                tab_view = ft.TabBarView(
+                    controls=[c1, c2],
+                    expand=True,
+                )
+                return ft.Tabs(
+                    content=ft.Column(controls=[tab_bar, tab_view], expand=True),
+                    length=2,
+                    expand=True,
+                )
+            except Exception:
+                pass
+
+        # Intento 2: Arquitectura Flet 0.2x (Tabs con lista de Tab con content interno)
+        try:
+            t1 = ft.Tab(text="Vista en Vivo", icon=ft.Icons.VIDEOCAM, content=c1)
+            t2 = ft.Tab(text="Dashboard Analítico", icon=ft.Icons.INSERT_CHART_OUTLINED, content=c2)
+        except TypeError:
+            t1 = ft.Tab(label="Vista en Vivo", icon=ft.Icons.VIDEOCAM, content=c1)
+            t2 = ft.Tab(label="Dashboard Analítico", icon=ft.Icons.INSERT_CHART_OUTLINED, content=c2)
+
+        return ft.Tabs(
+            selected_index=0,
+            animation_duration=250,
+            tabs=[t1, t2],
+            indicator_color=InstitucionalTheme.VERDE_ULSA,
+            label_color=InstitucionalTheme.VERDE_ULSA,
+            unselected_label_color=InstitucionalTheme.CAFE_TEXTO,
+            expand=True,
+        )
+
     def _iniciar_bucle_consumidor(self) -> None:
         """Inicia el hilo consumidor de video y telemetría."""
         self._hilo_consumidor = threading.Thread(
@@ -440,38 +456,27 @@ class InterfazClasificadora:
 
     def _bucle_consumidor(self) -> None:
         """
-        Consume frames y REEMPLAZA el widget ft.Image completo en cada cuadro.
-        Flutter cachea imágenes por ruta/src, así que cambiar solo .src no
-        fuerza un re-render. La única forma confiable es crear un nuevo
-        ft.Image con una ruta distinta cada vez.
+        Consume frames del detector y actualiza la UI y telemetría en tiempo real continuo.
+        Asigna el Data URI directamente a img_video.src y despacha la actualización a Flet,
+        logrando visualización fluida de los granos a 30 FPS sin necesidad de cambiar de pestaña.
         """
         ultimo_refresco_kpi = time.time()
-        frame_counter = 0
 
         while self._hilo_consumidor_activo:
-            hay_cambio = False
             try:
                 payload = self.detector.cola_salida.get(timeout=0.03)
 
-                frame_bytes = payload.get("frame_bytes", b"")
-                if frame_bytes:
-                    # Escribir a archivo con nombre único (ciclo de 8 archivos)
-                    frame_counter = (frame_counter + 1) % 8
-                    path = os.path.join(self._temp_dir, f"f{frame_counter}.jpg")
-                    with open(path, "wb") as f:
-                        f.write(frame_bytes)
+                # --- 1. Frame de video en tiempo real ---
+                frame_src = payload.get("frame_src", "")
+                if not frame_src:
+                    frame_b64 = payload.get("frame_base64", "")
+                    if frame_b64:
+                        frame_src = f"data:image/jpeg;base64,{frame_b64}"
 
-                    # Crear un widget Image NUEVO para forzar re-render en Flutter
-                    nueva_imagen = ft.Image(
-                        src=path,
-                        fit=ft.BoxFit.CONTAIN,
-                        width=700,
-                        height=480,
-                        border_radius=10,
-                    )
-                    self.contenedor_feed.content = nueva_imagen
-                    hay_cambio = True
+                if frame_src:
+                    self.img_video.src = frame_src
 
+                # --- 2. Telemetría de inferencia y hardware ---
                 detecciones = payload.get("detecciones", [])
                 fps = payload.get("fps", 0.0)
                 latencia_ms = payload.get("latencia_ms", 0.0)
@@ -487,27 +492,26 @@ class InterfazClasificadora:
                     activo=valvula_activa,
                     texto_nuevo="DISPARO" if valvula_activa else "STANDBY"
                 )
-                hay_cambio = True
+
+                # --- 3. Refrescar métricas analíticas periódicamente (~2 Hz) ---
+                ahora = time.time()
+                if ahora - ultimo_refresco_kpi >= 0.5:
+                    ultimo_refresco_kpi = ahora
+                    self._actualizar_metricas_ui()
+
+                # --- 4. Despachar actualización reactiva a la UI ---
+                try:
+                    self.page.update()
+                except Exception:
+                    pass
 
             except queue.Empty:
                 pass
             except Exception as e:
                 print(f"[UI Consumidor] Error: {e}")
 
-            ahora = time.time()
-            if ahora - ultimo_refresco_kpi >= 0.3:
-                ultimo_refresco_kpi = ahora
-                self._actualizar_metricas_ui()
-                hay_cambio = True
-
-            if hay_cambio:
-                try:
-                    self.page.update()
-                except Exception:
-                    pass
-
     def _actualizar_metricas_ui(self) -> None:
-        """Actualiza las tarjetas de KPIs y gráficos analíticos en tiempo real."""
+        """Actualiza las tarjetas de KPIs y gráficos analíticos."""
         # 1. Estado de conexión MongoDB
         if self.db_manager.esta_conectado:
             self.badge_db.set_estado(True, "MongoDB: Conectado")

@@ -38,6 +38,58 @@ class InstitucionalTheme:
     }
 
     @staticmethod
+    def pad_symmetric(horizontal: float = 0, vertical: float = 0):
+        """Genera Padding simétrico universalmente compatible con todas las versiones de Flet."""
+        try:
+            return ft.padding.symmetric(horizontal=horizontal, vertical=vertical)
+        except Exception:
+            try:
+                return ft.Padding(horizontal, vertical, horizontal, vertical)
+            except Exception:
+                return (horizontal, vertical)
+
+    @staticmethod
+    def pad_only(left: float = 0, top: float = 0, right: float = 0, bottom: float = 0):
+        """Genera Padding direccional universalmente compatible con todas las versiones de Flet."""
+        try:
+            return ft.padding.only(left=left, top=top, right=right, bottom=bottom)
+        except Exception:
+            try:
+                return ft.Padding(left, top, right, bottom)
+            except Exception:
+                return (left, top, right, bottom)
+
+    @staticmethod
+    def border_all(width: float = 1, color: str = "#000000"):
+        """Genera Border universalmente compatible con todas las versiones de Flet."""
+        try:
+            return ft.border.all(width, color)
+        except Exception:
+            try:
+                return ft.Border.all(width, color)
+            except Exception:
+                try:
+                    return ft.Border(
+                        ft.BorderSide(width, color),
+                        ft.BorderSide(width, color),
+                        ft.BorderSide(width, color),
+                        ft.BorderSide(width, color),
+                    )
+                except Exception:
+                    return None
+
+    @staticmethod
+    def align_center():
+        """Genera alineación central universalmente compatible con todas las versiones de Flet."""
+        try:
+            return ft.alignment.center
+        except Exception:
+            try:
+                return ft.Alignment(0, 0)
+            except Exception:
+                return None
+
+    @staticmethod
     def estilo_tarjeta(expand: bool = False) -> dict:
         """
         Genera el diseño de tarjeta con esquinas redondeadas y sombra suave difuminada.
@@ -94,7 +146,7 @@ class InstitucionalTheme:
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.BLANCO_PURO,
                 bgcolor=InstitucionalTheme.VERDE_ULSA,
-                padding=ft.Padding.symmetric(horizontal=20, vertical=12),
+                padding=InstitucionalTheme.pad_symmetric(horizontal=20, vertical=12),
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
         )
@@ -109,7 +161,7 @@ class InstitucionalTheme:
             style=ft.ButtonStyle(
                 color=InstitucionalTheme.CAFE_TEXTO,
                 side=ft.BorderSide(1.5, InstitucionalTheme.CAFE_TEXTO),
-                padding=ft.Padding.symmetric(horizontal=16, vertical=10),
+                padding=InstitucionalTheme.pad_symmetric(horizontal=16, vertical=10),
                 shape=ft.RoundedRectangleBorder(radius=10),
             ),
         )

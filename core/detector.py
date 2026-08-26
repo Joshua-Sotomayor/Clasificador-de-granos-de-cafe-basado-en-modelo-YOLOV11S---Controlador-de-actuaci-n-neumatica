@@ -256,6 +256,7 @@ class YOLODetector:
             frame_b64 = self._frame_a_base64(frame_anotado)
 
             payload = {
+                "frame_bgr": frame_anotado,
                 "frame_bytes": frame_bytes,
                 "frame_base64": frame_b64,
                 "frame_src": f"data:image/jpeg;base64,{frame_b64}",

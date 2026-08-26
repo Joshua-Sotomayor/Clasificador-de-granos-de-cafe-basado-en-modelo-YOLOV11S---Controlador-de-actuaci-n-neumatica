@@ -45,7 +45,7 @@ class GraficoBarrasGranos(ft.Container):
                             content=ft.Text("Sanos vs Defectos", size=11, weight=ft.FontWeight.BOLD, color=InstitucionalTheme.CAFE_TEXTO),
                             bgcolor=InstitucionalTheme.CAFE_CLARO,
                             border_radius=10,
-                            padding=ft.Padding.symmetric(horizontal=8, vertical=3),
+                            padding=InstitucionalTheme.pad_symmetric(horizontal=8, vertical=3),
                         ),
                     ],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -187,8 +187,8 @@ class GraficoPastelDefectos(ft.Container):
                         spacing=8,
                         alignment=ft.MainAxisAlignment.CENTER,
                     ),
-                    padding=ft.Padding.symmetric(vertical=20),
-                    alignment=ft.Alignment.CENTER,
+                    padding=InstitucionalTheme.pad_symmetric(vertical=20),
+                    alignment=InstitucionalTheme.align_center(),
                 )
             )
         else:
