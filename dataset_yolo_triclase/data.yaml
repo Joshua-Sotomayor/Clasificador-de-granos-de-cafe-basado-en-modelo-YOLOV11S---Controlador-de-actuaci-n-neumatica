@@ -1,0 +1,11 @@
+# Configuración del Dataset Tri-Clase YOLO (Finca Alvizua)
+path: dataset_yolo_triclase
+train: images/train
+val: images/val
+
+nc: 3
+
+names:
+  0: Arabica_Bueno
+  1: Robusta_Bueno
+  2: Grano_Defecto
