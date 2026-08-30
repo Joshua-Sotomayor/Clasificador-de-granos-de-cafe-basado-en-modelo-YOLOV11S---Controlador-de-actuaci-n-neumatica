@@ -17,6 +17,8 @@ dataset_yolo/images/
 dataset_yolo/labels/
 dataset_yolo_800px/images/
 dataset_yolo_800px/labels/
+dataset_yolo_binario/images/
+dataset_yolo_binario/labels/
 
 # Archivos del sistema operativo
 .DS_Store

@@ -1,0 +1,10 @@
+# Configuración del Dataset Binario YOLO (Finca Alvizua)
+path: dataset_yolo_binario
+train: images/train
+val: images/val
+
+nc: 2
+
+names:
+  0: Grano_Bueno
+  1: Grano_Defecto
