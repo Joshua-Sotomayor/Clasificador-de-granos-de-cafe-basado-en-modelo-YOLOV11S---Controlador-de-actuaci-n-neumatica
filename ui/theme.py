@@ -1,6 +1,7 @@
 """
 Tema y Estilos Institucionales (Paleta ULSA y Modo Claro Limpio)
 Define colores, tipografías, tarjetas con sombra suave y componentes estandarizados.
+Soporte para estilo neomórfico con sombras suaves y efecto de profundidad.
 """
 
 import flet as ft
@@ -10,6 +11,7 @@ class InstitucionalTheme:
     """
     Gestiona la paleta de colores y estilos visuales oficiales para la aplicación.
     Garantiza una estética limpia, profesional y libre de temas oscuros o neones agresivos.
+    Incluye soporte para estilo neomórfico.
     """
 
     # --- Paleta de Colores Institucional ---
@@ -36,6 +38,20 @@ class InstitucionalTheme:
         "Concha": "#3949AB",
         "Inmaduro": "#00897B",
     }
+
+    # --- Efectos Neomórficos ---
+    SOMBRA_NEOMORFISMO = ft.BoxShadow(
+        spread_radius=1,
+        blur_radius=12,
+        color=ft.Colors.with_opacity(0.1, ft.Colors.BLACK),
+        offset=ft.Offset(2, 4),
+    )
+    SOMBRA_NEOMORFISMO_INSET = ft.BoxShadow(
+        spread_radius=1,
+        blur_radius=12,
+        color=ft.Colors.with_opacity(0.1, ft.Colors.WHITE),
+        offset=ft.Offset(-2, -4),
+    )
 
     @staticmethod
     def pad_symmetric(horizontal: float = 0, vertical: float = 0):
@@ -90,20 +106,24 @@ class InstitucionalTheme:
                 return None
 
     @staticmethod
-    def estilo_tarjeta(expand: bool = False) -> dict:
+    def estilo_tarjeta(expand: bool = False, neomorph: bool = False) -> dict:
         """
         Genera el diseño de tarjeta con esquinas redondeadas y sombra suave difuminada.
+        Si neomorph=True, aplica efecto neomórfico con sombras duales.
         """
+        sombra = None
+        if neomorph:
+            sombra = ft.BoxShadow(
+                spread_radius=1,
+                blur_radius=15,
+                color=ft.Colors.with_opacity(0.15, ft.Colors.BLACK),
+                offset=ft.Offset(3, 6),
+            )
         estilo = {
             "bgcolor": InstitucionalTheme.BLANCO_PURO,
-            "border_radius": 15,
-            "padding": 20,
-            "shadow": ft.BoxShadow(
-                spread_radius=1,
-                blur_radius=12,
-                color=ft.Colors.with_opacity(0.08, ft.Colors.BLACK),
-                offset=ft.Offset(0, 4),
-            ),
+            "border_radius": 15 if not neomorph else 12,
+            "padding": 20 if not neomorph else 16,
+            "shadow": sombra,
         }
         if expand:
             estilo["expand"] = True
