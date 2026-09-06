@@ -151,13 +151,13 @@ def generar_dataset_binario():
             guardar_etiquetas(ruta_lbl_out, cajas_finales, clases_orig)
             estadisticas[f"{part}_base"] += 1
 
-            # Aumento leve en train (1 variación por imagen base para enriquecer orientación)
+            # Aumento completo en train (8 variaciones ricas por imagen base: rotaciones, flips, brillo, contraste)
             if part == "train" and len(cajas_finales) > 0:
                 variaciones = aumentador.aumentar_muestra(
                     imagen=img_final,
                     cajas_delimitadoras=cajas_finales,
                     etiquetas_clases=clases_orig,
-                    multiplicador=2
+                    multiplicador=8
                 )
                 for idx, v in enumerate(variaciones, 1):
                     nom_aum = f"{m['nombre_base']}_aum_{idx}"
