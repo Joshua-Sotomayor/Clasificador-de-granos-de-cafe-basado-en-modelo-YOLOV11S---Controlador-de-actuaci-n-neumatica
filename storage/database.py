@@ -20,6 +20,19 @@ from datetime import datetime, timedelta
 from contextlib import contextmanager
 from typing import Dict, Any, List, Optional, Tuple, Callable, Union
 
+try:
+    from pymongo import MongoClient
+    from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure, PyMongoError
+    import certifi
+    PYMONGO_DISPONIBLE = True
+except ImportError:
+    MongoClient = None
+    ServerSelectionTimeoutError = Exception
+    ConnectionFailure = Exception
+    PyMongoError = Exception
+    certifi = None
+    PYMONGO_DISPONIBLE = False
+
 # =====================================================================
 # 1. CONFIGURACIÓN DE LOGS Y ALARMAS DE HARDWARE
 # =====================================================================
@@ -169,23 +182,20 @@ class DatabaseManager:
         logger.info(f"SQLite inicializado correctamente en '{self.ruta_sqlite}' (Modo WAL).")
 
     def _conectar_mongo(self) -> bool:
-        """Establece conexión y realiza ping de salud con MongoDB Atlas."""
+        """Establece conexión y realiza ping de salud con MongoDB Atlas con timeout de 5000 ms."""
         if not self.uri_mongo or not self.uri_mongo.startswith("mongodb"):
             logger.info("MongoDB URI no configurada. Operando exclusivamente en modo SQLite Offline.")
             self._conectado_mongo = False
             return False
 
         try:
-            from pymongo import MongoClient
-            import certifi
-
             with self._lock:
                 self._cliente_mongo = MongoClient(
                     self.uri_mongo,
-                    serverSelectionTimeoutMS=3500,
-                    connectTimeoutMS=3500,
-                    socketTimeoutMS=3500,
-                    tlsCAFile=certifi.where() if hasattr(certifi, "where") else None,
+                    serverSelectionTimeoutMS=5000,
+                    connectTimeoutMS=5000,
+                    socketTimeoutMS=5000,
+                    tlsCAFile=certifi.where() if (certifi and hasattr(certifi, "where")) else None,
                 )
                 # Comando ping de validación de latencia
                 self._cliente_mongo.admin.command("ping")
@@ -197,6 +207,17 @@ class DatabaseManager:
             # Intentar sincronizar lotes pendientes inmediatamente
             self.sincronizar_pendientes()
             return True
+        except (ServerSelectionTimeoutError, ConnectionFailure) as conn_err:
+            logger.warning(
+                f"Tiempo de espera agotado (5000 ms) o fallo de conexión con MongoDB Atlas: {conn_err}. "
+                f"Operando en modo SQLite Offline."
+            )
+            self._conectado_mongo = False
+            return False
+        except PyMongoError as pme:
+            logger.warning(f"Error de PyMongo al conectar con MongoDB Atlas: {pme}. Modo Offline activo.")
+            self._conectado_mongo = False
+            return False
         except Exception as e:
             logger.warning(f"No se pudo conectar a MongoDB Atlas ({e}). Modo Offline activo.")
             self._conectado_mongo = False
@@ -298,6 +319,17 @@ class DatabaseManager:
 
                 logger.info(f"Lote {id_lote} sincronizado con MongoDB Atlas (ID: {res_mongo.inserted_id}).")
                 return True, f"Guardado en MongoDB Atlas y SQLite (ID: {res_mongo.inserted_id})"
+            except (ServerSelectionTimeoutError, ConnectionFailure) as conn_err:
+                logger.warning(
+                    f"Timeout (5000 ms) o fallo de conexión con Atlas al guardar lote {id_lote} ({conn_err}). "
+                    f"Queda pendiente en SQLite (sync=0)."
+                )
+                self._conectado_mongo = False
+            except PyMongoError as pme:
+                logger.warning(
+                    f"Error de PyMongo al guardar lote {id_lote} en Atlas ({pme}). Queda pendiente en SQLite."
+                )
+                self._conectado_mongo = False
             except Exception as e:
                 logger.warning(f"Error subiendo lote {id_lote} a MongoDB Atlas ({e}). Queda pendiente en SQLite.")
                 self._conectado_mongo = False
@@ -323,60 +355,95 @@ class DatabaseManager:
 
     def sincronizar_pendientes(self) -> int:
         """
-        Busca registros en SQLite con sync=0 y los sube a MongoDB Atlas.
-        Retorna la cantidad de lotes exitosamente sincronizados.
+        Lee de la base SQLite todos los registros con sync = 0, los transforma a diccionarios
+        compatibles con JSON y los sube a MongoDB Atlas utilizando insert_many().
+        Transaccionalidad Estricta: Solo si MongoDB responde con éxito sin excepciones,
+        ejecuta un UPDATE en SQLite cambiando el flag a sync = 1 para esos registros específicos.
         """
-        if not self._conectado_mongo or self._coleccion_mongo is None:
-            if not self._conectar_mongo():
-                return 0
-
+        # 1. Leer de SQLite todos los registros pendientes con sync = 0
         lotes_pendientes = []
         with self._lock:
             with self._conectar_sqlite() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT id_lote, resumen_completo_json FROM lotes WHERE sync=0 ORDER BY id ASC LIMIT 50;"
+                    "SELECT id, id_lote, resumen_completo_json FROM lotes WHERE sync = 0 ORDER BY id ASC;"
                 )
                 lotes_pendientes = cursor.fetchall()
 
         if not lotes_pendientes:
             return 0
 
-        logger.info(f"Sincronizando {len(lotes_pendientes)} lotes pendientes con MongoDB Atlas...")
-        sincronizados_count = 0
+        # 2. Transformar filas devueltas a diccionarios compatibles con JSON
+        documentos_a_subir: List[Dict[str, Any]] = []
+        ids_a_actualizar: List[int] = []
 
         for row in lotes_pendientes:
+            id_registro = row["id"]
             id_lote = row["id_lote"]
             try:
                 resumen_dict = json.loads(row["resumen_completo_json"])
+                # Asegurar compatibilidad MongoDB eliminando cualquier _id previo
                 if "_id" in resumen_dict:
                     del resumen_dict["_id"]
+                resumen_dict["id_lote"] = id_lote
+                documentos_a_subir.append(resumen_dict)
+                ids_a_actualizar.append(id_registro)
+            except Exception as e:
+                logger.error(f"Error parseando JSON de lote {id_lote} para sincronización: {e}")
 
-                self._coleccion_mongo.update_one(
-                    {"id_lote": id_lote},
-                    {"$set": resumen_dict},
-                    upsert=True,
-                )
+        if not documentos_a_subir:
+            return 0
+
+        # 3. Conexión a Atlas si no estaba activa (con timeout seguro de 5000 ms)
+        if not self._conectado_mongo or self._coleccion_mongo is None:
+            if not self._conectar_mongo():
+                return 0
+
+        # 4. Inserción con insert_many y Transaccionalidad Estricta
+        logger.info(f"Sincronizando {len(documentos_a_subir)} lotes pendientes con MongoDB Atlas...")
+        try:
+            resultado = self._coleccion_mongo.insert_many(documentos_a_subir, ordered=False)
+
+            # Transaccionalidad Estricta: Solo si MongoDB respondió con éxito
+            if resultado and resultado.inserted_ids:
                 fecha_sinc = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
+                placeholders = ",".join("?" * len(ids_a_actualizar))
                 with self._lock:
                     with self._conectar_sqlite() as conn:
                         conn.execute(
-                            "UPDATE lotes SET sync=1, fecha_sync=? WHERE id_lote=?;",
-                            (fecha_sinc, id_lote),
+                            f"UPDATE lotes SET sync = 1, fecha_sync = ? WHERE id IN ({placeholders});",
+                            [fecha_sinc] + ids_a_actualizar,
                         )
-                sincronizados_count += 1
-            except Exception as e:
-                logger.error(f"Falla al sincronizar lote {id_lote}: {e}")
-                self._conectado_mongo = False
-                break
+                total_sincronizados = len(resultado.inserted_ids)
+                logger.info(
+                    f"Sincronización completada exitosamente: {total_sincronizados} lotes "
+                    f"actualizados en Atlas y marcados con sync=1."
+                )
+                return total_sincronizados
+            return 0
 
-        if sincronizados_count > 0:
-            logger.info(f"Sincronización completada: {sincronizados_count} lotes actualizados en la nube.")
-        return sincronizados_count
+        except (ServerSelectionTimeoutError, ConnectionFailure) as conn_err:
+            logger.warning(
+                f"Fallo de conexión o timeout (5000 ms) al sincronizar con MongoDB Atlas: {conn_err}. "
+                f"Sincronización en pausa; se reintentará en el próximo ciclo."
+            )
+            self._conectado_mongo = False
+            return 0
+        except PyMongoError as pme:
+            logger.warning(
+                f"Error de PyMongo durante sincronización de lotes: {pme}. Se reintentará en el próximo ciclo."
+            )
+            self._conectado_mongo = False
+            return 0
+        except Exception as e:
+            logger.warning(
+                f"Error inesperado al sincronizar lotes con MongoDB Atlas: {e}. Se reintentará en el próximo ciclo."
+            )
+            self._conectado_mongo = False
+            return 0
 
-    def iniciar_demonio_sincronizacion(self, intervalo_segundos: int = 30) -> None:
-        """Lanza el bucle daemon para reconexión y sincronización automática."""
+    def iniciar_demonio_sincronizacion(self, intervalo_segundos: int = 20) -> None:
+        """Lanza el bucle daemon para reconexión y sincronización automática en segundo plano."""
         if self._demonio_activo:
             return
         self._demonio_activo = True
@@ -389,8 +456,17 @@ class DatabaseManager:
                         self._conectar_mongo()
                     else:
                         self.sincronizar_pendientes()
+                except (ServerSelectionTimeoutError, ConnectionFailure) as conn_err:
+                    logger.warning(
+                        f"Fallo de conexión en hilo de sincronización ({conn_err}). "
+                        f"Reintentando en próximo ciclo."
+                    )
+                    self._conectado_mongo = False
+                except PyMongoError as pme:
+                    logger.warning(f"Error de PyMongo en hilo de sincronización: {pme}")
+                    self._conectado_mongo = False
                 except Exception as e:
-                    logger.debug(f"Demonio de sincronización: {e}")
+                    logger.warning(f"Advertencia en ciclo de sincronización en segundo plano: {e}")
 
         threading.Thread(target=_bucle, daemon=True).start()
 

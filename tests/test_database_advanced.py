@@ -181,6 +181,97 @@ class TestDatabaseAdvanced(unittest.TestCase):
         self.assertFalse(verificar_alarma_valvula(20.0))
         self.assertTrue(verificar_alarma_valvula(36.5))
 
+    def test_sincronizar_pendientes_insert_many_exito(self):
+        """Valida que sincronizar_pendientes use insert_many y actualice sync=1 en SQLite."""
+        from unittest.mock import MagicMock
+
+        # 1. Insertar dos lotes con sync=0
+        lote1 = {"id_lote": "LOTE-SYNC-01", "total_granos": 10, "porcentaje_calidad": 100.0}
+        lote2 = {"id_lote": "LOTE-SYNC-02", "total_granos": 20, "porcentaje_calidad": 95.0}
+        self.db_manager.guardar_lote_transaccional(lote1)
+        self.db_manager.guardar_lote_transaccional(lote2)
+
+        # 2. Mockear colección MongoDB
+        mock_coleccion = MagicMock()
+        mock_resultado = MagicMock()
+        mock_resultado.inserted_ids = ["mongo_id_1", "mongo_id_2"]
+        mock_coleccion.insert_many.return_value = mock_resultado
+
+        self.db_manager._coleccion_mongo = mock_coleccion
+        self.db_manager._conectado_mongo = True
+
+        # 3. Ejecutar sincronización
+        sincronizados = self.db_manager.sincronizar_pendientes()
+        self.assertEqual(sincronizados, 2)
+
+        # Verificar llamada a insert_many
+        mock_coleccion.insert_many.assert_called_once()
+        docs_enviados = mock_coleccion.insert_many.call_args[0][0]
+        self.assertEqual(len(docs_enviados), 2)
+        for doc in docs_enviados:
+            self.assertNotIn("_id", doc)
+            self.assertIn("id_lote", doc)
+
+        # 4. Verificar transaccionalidad estricta en SQLite
+        with sqlite3.connect(self.ruta_db_test) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id_lote, sync, fecha_sync FROM lotes WHERE id_lote IN ('LOTE-SYNC-01', 'LOTE-SYNC-02');")
+            rows = cursor.fetchall()
+            self.assertEqual(len(rows), 2)
+            for r in rows:
+                self.assertEqual(r[1], 1)  # sync = 1
+                self.assertIsNotNone(r[2]) # fecha_sync asignada
+
+    def test_sincronizar_pendientes_timeout_error(self):
+        """Valida que ServerSelectionTimeoutError no colapse la app y preserve sync=0 en SQLite."""
+        from unittest.mock import MagicMock
+        from pymongo.errors import ServerSelectionTimeoutError
+
+        lote = {"id_lote": "LOTE-TIMEOUT-01", "total_granos": 15}
+        self.db_manager.guardar_lote_transaccional(lote)
+
+        mock_coleccion = MagicMock()
+        mock_coleccion.insert_many.side_effect = ServerSelectionTimeoutError("No server available within 5000 ms")
+
+        self.db_manager._coleccion_mongo = mock_coleccion
+        self.db_manager._conectado_mongo = True
+
+        sincronizados = self.db_manager.sincronizar_pendientes()
+        self.assertEqual(sincronizados, 0)
+        self.assertFalse(self.db_manager.esta_conectado_mongo)
+
+        # Transaccionalidad: el lote DEBE seguir en sync=0
+        with sqlite3.connect(self.ruta_db_test) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT sync FROM lotes WHERE id_lote='LOTE-TIMEOUT-01';")
+            row = cursor.fetchone()
+            self.assertEqual(row[0], 0)
+
+    def test_sincronizar_pendientes_connection_failure(self):
+        """Valida que ConnectionFailure sea capturado silenciosamente preservando sync=0."""
+        from unittest.mock import MagicMock
+        from pymongo.errors import ConnectionFailure
+
+        lote = {"id_lote": "LOTE-CONNFAIL-01", "total_granos": 25}
+        self.db_manager.guardar_lote_transaccional(lote)
+
+        mock_coleccion = MagicMock()
+        mock_coleccion.insert_many.side_effect = ConnectionFailure("Connection reset by peer")
+
+        self.db_manager._coleccion_mongo = mock_coleccion
+        self.db_manager._conectado_mongo = True
+
+        sincronizados = self.db_manager.sincronizar_pendientes()
+        self.assertEqual(sincronizados, 0)
+        self.assertFalse(self.db_manager.esta_conectado_mongo)
+
+        # Transaccionalidad: el lote DEBE seguir en sync=0
+        with sqlite3.connect(self.ruta_db_test) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT sync FROM lotes WHERE id_lote='LOTE-CONNFAIL-01';")
+            row = cursor.fetchone()
+            self.assertEqual(row[0], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
