@@ -29,4 +29,8 @@ Thumbs.db
 # Configuración local y backups
 .env
 storage/*.json
+storage/*.db
+storage/*.db-wal
+storage/*.db-shm
+*.db
 *.zip

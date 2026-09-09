@@ -13,7 +13,7 @@ load_dotenv()
 
 from core.detector import YOLODetector
 from core.metricas import GestorMetricas
-from storage.database import MongoManager
+from storage.database import DatabaseManager, GestorLotes, MongoManager
 
 
 def main():
@@ -40,7 +40,8 @@ def main():
         fuente_video=fuente_video,
         confianza_minima=confianza_min,
     )
-    db_manager = MongoManager(uri_mongo=mongo_uri)
+    db_manager = DatabaseManager(uri_mongo=mongo_uri)
+    gestor_lotes = GestorLotes(db_manager=db_manager)
 
     # 2. Lanzar interfaz gráfica
     if "--flet" in sys.argv:
@@ -67,6 +68,7 @@ def main():
             detector=detector,
             metricas=metricas,
             db_manager=db_manager,
+            gestor_lotes=gestor_lotes,
         )
         app.mainloop()
 

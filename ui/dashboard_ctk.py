@@ -1,9 +1,11 @@
 """
 Dashboard de Inferencia y Telemetría MOPPI basado en CustomTkinter.
 Proporciona streaming nativo en tiempo real a 30-60 FPS con latencia cero,
-sin dependencias de WebSockets ni problemas de serialización IPC.
+gráficos analíticos reactivos con Matplotlib, tarjetas neumorfistas
+y persistencia transaccional (MongoDB Atlas + SQLite Offline-First).
 """
 
+import os
 import time
 import queue
 import threading
@@ -12,21 +14,26 @@ from PIL import Image
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import messagebox
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Union
+
+import matplotlib
+matplotlib.use("TkAgg")
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from core.detector import YOLODetector
 from core.metricas import GestorMetricas
-from storage.database import MongoManager
+from storage.database import DatabaseManager, GestorLotes, MongoManager
 
 
 class DashboardCustomTkinter(ctk.CTk):
     """
     Ventana principal de la interfaz MOPPI implementada con CustomTkinter.
-    Aplica estilo neomórfico con sombras suaves y efecto de profundidad,
+    Aplica estilo neomórfico con bordes redondeados y colores de fondo suaves,
     manteniendo la paleta de colores institucionales ULSA.
     """
 
-    # --- Paleta de Colores Institucionales ULSA ---
+    # --- Paleta de Colores Institucionales ULSA y Neumorfismo ---
     COLOR_VERDE_ULSA = "#197B30"
     COLOR_VERDE_HOVER = "#145F25"
     COLOR_VERDE_CLARO = "#E8F5E9"
@@ -35,43 +42,61 @@ class DashboardCustomTkinter(ctk.CTk):
     COLOR_CAFE_TEXTO = "#4A3B32"
     COLOR_CAFE_CLARO = "#D7CCC8"
     COLOR_GRIS_SEC = "#757575"
+    COLOR_FONDO_APP = "#F5F6F8"
     COLOR_FONDO_CARD_LIGHT = "#FFFFFF"
-    COLOR_FONDO_CARD_DARK = "#2B2B2B"
+    COLOR_BORDE_NEUMORFICO = "#E0E0E0"
     COLOR_AMARILLO_ALERTA = "#F57F17"
 
-    COLORES_DEFECTOS = {
-        "Brocado": "#E53935",
-        "Agrio": "#FB8C00",
-        "Negro": "#37474F",
-        "Quebrado": "#8D6E63",
-        "Cereza": "#8E24AA",
-        "Concha": "#3949AB",
-        "Inmaduro": "#00897B",
+    # Paleta para las 13 Clases individuales
+    COLORES_13_CLASES = {
+        "Arabica_Bueno": "#197B30",
+        "Robusta_Bueno": "#2E7D32",
+        "Arabica_Agrio": "#FB8C00",
+        "Arabica_Brocado": "#E53935",
+        "Arabica_Cereza": "#8E24AA",
+        "Arabica_Concha": "#3949AB",
+        "Arabica_Inmaduro": "#00897B",
+        "Arabica_Negro": "#37474F",
+        "Arabica_Quebrado": "#8D6E63",
+        "Robusta_Brocado": "#D32F2F",
+        "Robusta_Cereza": "#AB47BC",
+        "Robusta_Negro": "#263238",
+        "Robusta_Quebrado": "#6D4C41",
     }
 
-    # --- Efectos Neomórficos ---
-    SOMBRA_SUAVE = "1px 2px 5px rgba(0,0,0,0.1), -1px -2px 5px rgba(0,0,0,0.1)"
-    RADIUS_CARD = 12
+    # Paleta para el Modelo Tri-Clase (Campeón V10)
+    COLORES_TRI_CLASE = {
+        "Arabica_Bueno": "#197B30",
+        "Robusta_Bueno": "#2E7D32",
+        "Grano_Defecto": "#C62828",
+    }
+
+    RADIUS_CARD = 14
     RADIUS_SMALL = 10
 
     def __init__(
         self,
         detector: YOLODetector,
         metricas: GestorMetricas,
-        db_manager: MongoManager,
-    ):
+        db_manager: Union[DatabaseManager, MongoManager],
+        gestor_lotes: Optional[GestorLotes] = None,
+    ) -> None:
         super().__init__()
 
         self.detector = detector
         self.metricas = metricas
         self.db_manager = db_manager
+        self.gestor_lotes = gestor_lotes or GestorLotes(
+            db_manager=self.db_manager,
+            callback_lote_finalizado=self._al_lote_finalizado_auto,
+        )
 
-        # Configuración de ventana
-        self.title("MOPPI - Clasificador Óptico de Café (Finca Alvizua)")
-        self.geometry("1280x820")
-        self.minsize(1050, 720)
+        # Configuración de ventana principal
+        self.title("Clasificadora de Granos de Café Oro | Finca Alvizua")
+        self.geometry("1320x840")
+        self.minsize(1080, 720)
+        self.configure(fg_color=self.COLOR_FONDO_APP)
 
-        # Tema claro institucional por defecto
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("green")
 
@@ -79,43 +104,45 @@ class DashboardCustomTkinter(ctk.CTk):
         self._ultimo_refresco_kpi = time.time()
         self._ctk_image_ref = None
 
+        # Variables para Matplotlib Reactivo
+        self.fig_reactiva: Optional[Figure] = None
+        self.ax_reactivo = None
+        self.canvas_reactivo: Optional[FigureCanvasTkAgg] = None
+
         self._construir_interfaz()
 
-        # Iniciar detector
+        # Iniciar detector YOLO en modo preview
         self.detector.iniciar()
 
-        # Iniciar bucle de refresco nativo en hilo de UI (cada 15 ms ~ 60 FPS)
+        # Iniciar bucle de refresco nativo en UI (15 ms ~ 60 FPS)
         self.after(15, self._bucle_actualizacion_frame)
 
-        # Manejador de cierre limpio
+        # Manejador de cierre ordenado
         self.protocol("WM_DELETE_WINDOW", self._al_cerrar)
 
     def _construir_interfaz(self) -> None:
-        """Construye el layout principal y pestañas con estilo neomórfico."""
+        """Construye el layout principal con estilo neomórfico y pestañas."""
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
-        # --- 1. Cabecera Superior ---
-        # Efecto neomórfico: carta elevada con sombra suave
+        # --- 1. Cabecera Superior Neumórfica ---
         cabecera = ctk.CTkFrame(
             self,
             fg_color=self.COLOR_FONDO_CARD_LIGHT,
             corner_radius=self.RADIUS_CARD,
-            height=65,
+            height=68,
             border_width=1,
-            border_color=self.COLOR_CAFE_CLARO,
+            border_color=self.COLOR_BORDE_NEUMORFICO,
         )
-        cabecera.grid(row=0, column=0, padx=15, pady=(12, 6), sticky="ew")
+        cabecera.grid(row=0, column=0, padx=16, pady=(12, 6), sticky="ew")
         cabecera.grid_columnconfigure(0, weight=1)
-        # Simular sombra neomórfica mediante configuración de UI
-        cabecera._neomorph_shadow = True
 
         frame_titulos = ctk.CTkFrame(cabecera, fg_color="transparent")
-        frame_titulos.grid(row=0, column=0, padx=15, pady=8, sticky="w")
+        frame_titulos.grid(row=0, column=0, padx=16, pady=8, sticky="w")
 
         lbl_titulo = ctk.CTkLabel(
             frame_titulos,
-            text="MOPPI | CLASIFICADOR ÓPTICO DE CAFÉ",
+            text="Clasificadora de Granos de Café Oro",
             font=ctk.CTkFont(size=18, weight="bold"),
             text_color=self.COLOR_CAFE_TEXTO,
         )
@@ -123,35 +150,19 @@ class DashboardCustomTkinter(ctk.CTk):
 
         lbl_subtitulo = ctk.CTkLabel(
             frame_titulos,
-            text="Inferencia en Tiempo Real & Telemetría Electromecánica (Finca Alvizua)",
+            text="Inferencia en Tiempo Real y Telemetría Electromecánica (Finca Alvizua)",
             font=ctk.CTkFont(size=12),
             text_color=self.COLOR_GRIS_SEC,
         )
         lbl_subtitulo.pack(anchor="w")
 
-# Badges de estado en cabecera
-        # Efecto neomórfico: contenedor con sombra interna sutil
-        frame_badges = ctk.CTkFrame(
-            cabecera,
-            fg_color="transparent",
-            corner_radius=self.RADIUS_SMALL,
-        )
-        frame_badges.grid(row=0, column=1, padx=15, pady=8, sticky="e")
+        # Controles y Badges en la cabecera
+        frame_controles_hdr = ctk.CTkFrame(cabecera, fg_color="transparent")
+        frame_controles_hdr.grid(row=0, column=1, padx=16, pady=8, sticky="e")
 
-        self.badge_modelo = ctk.CTkButton(
-            frame_badges,
-            text="Modelo: YOLOv8" if not self.detector.modo_simulado else "Modo Simulación",
-            fg_color=self.COLOR_VERDE_CLARO,
-            text_color=self.COLOR_VERDE_ULSA,
-            hover=False,
-            height=28,
-            corner_radius=14,
-            font=ctk.CTkFont(size=11, weight="bold"),
-        )
-        self.badge_modelo.pack(side="left", padx=5)
-
+        # Badges de estado
         self.badge_db = ctk.CTkButton(
-            frame_badges,
+            frame_controles_hdr,
             text="MongoDB: Conectando...",
             fg_color="#FFF8E1",
             text_color=self.COLOR_AMARILLO_ALERTA,
@@ -162,18 +173,52 @@ class DashboardCustomTkinter(ctk.CTk):
         )
         self.badge_db.pack(side="left", padx=5)
 
+        self.badge_modelo = ctk.CTkButton(
+            frame_controles_hdr,
+            text="Modo: Tri-clase",
+            fg_color=self.COLOR_VERDE_CLARO,
+            text_color=self.COLOR_VERDE_ULSA,
+            hover=False,
+            height=28,
+            corner_radius=14,
+            font=ctk.CTkFont(size=11, weight="bold"),
+        )
+        self.badge_modelo.pack(side="left", padx=5)
+
+        # 1. Control de Modelo: Switch entre 13 Clases y Tri-clase
+        self.switch_modelo = ctk.CTkSwitch(
+            frame_controles_hdr,
+            text="13 Clases",
+            command=self._al_cambiar_switch_modelo,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            progress_color=self.COLOR_VERDE_ULSA,
+        )
+        self.switch_modelo.pack(side="left", padx=8)
+        # Por defecto: Tri-clase (switch apagado)
+        self.switch_modelo.deselect()
+
+        # 2. Control de Inferencia SAHI (On/Off)
+        self.switch_sahi = ctk.CTkSwitch(
+            frame_controles_hdr,
+            text="SAHI: OFF",
+            command=self._al_cambiar_switch_sahi,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            progress_color=self.COLOR_VERDE_ULSA,
+        )
+        self.switch_sahi.pack(side="left", padx=8)
+        self.switch_sahi.deselect()
+
         # --- 2. Pestañas Principales ---
-        # Estilo neomórfico: tabview con efecto de profundidad
         self.tabview = ctk.CTkTabview(
             self,
             segmented_button_selected_color=self.COLOR_VERDE_ULSA,
             segmented_button_selected_hover_color=self.COLOR_VERDE_HOVER,
             corner_radius=self.RADIUS_CARD,
             fg_color=self.COLOR_FONDO_CARD_LIGHT,
-            border_color=self.COLOR_CAFE_CLARO,
+            border_color=self.COLOR_BORDE_NEUMORFICO,
             border_width=1,
         )
-        self.tabview.grid(row=1, column=0, padx=15, pady=(0, 12), sticky="nsew")
+        self.tabview.grid(row=1, column=0, padx=16, pady=(0, 12), sticky="nsew")
 
         self.tab_vivo = self.tabview.add("Vista en Vivo")
         self.tab_analitico = self.tabview.add("Dashboard Analítico")
@@ -182,42 +227,44 @@ class DashboardCustomTkinter(ctk.CTk):
         self._construir_pestana_analitico()
 
     def _construir_pestana_vivo(self) -> None:
-        """Construye la vista de la cámara en vivo y controles laterales."""
+        """Construye la vista de cámara en vivo y controles de hardware laterales."""
         self.tab_vivo.grid_columnconfigure(0, weight=1)
         self.tab_vivo.grid_columnconfigure(1, weight=0)
         self.tab_vivo.grid_rowconfigure(0, weight=1)
 
-        # Contenedor del Feed de Video
-        # Efecto neomórfico: card con sombra suave y borde sutil
+        # Card de Video
         self.card_video = ctk.CTkFrame(
             self.tab_vivo,
             fg_color="#1E1E1E",
             corner_radius=self.RADIUS_CARD,
             border_width=1,
-            border_color=self.COLOR_CAFE_CLARO,
+            border_color=self.COLOR_BORDE_NEUMORFICO,
         )
         self.card_video.grid(row=0, column=0, padx=(0, 10), pady=5, sticky="nsew")
         self.card_video.grid_rowconfigure(0, weight=1)
         self.card_video.grid_columnconfigure(0, weight=1)
 
-        # Label donde se renderizan los frames OpenCV
         self.lbl_video = ctk.CTkLabel(self.card_video, text="Iniciando cámara...", text_color="#CCCCCC")
         self.lbl_video.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
 
         # Panel Lateral Derecho (Controles y Telemetría)
-        # Efecto neomórfico: panel con sombra y profundidad
         panel_lateral = ctk.CTkScrollableFrame(
             self.tab_vivo,
             width=340,
             corner_radius=self.RADIUS_CARD,
             fg_color=self.COLOR_FONDO_CARD_LIGHT,
             border_width=1,
-            border_color=self.COLOR_CAFE_CLARO,
+            border_color=self.COLOR_BORDE_NEUMORFICO,
         )
         panel_lateral.grid(row=0, column=1, padx=(5, 0), pady=5, sticky="nsew")
 
-        # 1. Configuración de Cámara
-        lbl_sec1 = ctk.CTkLabel(panel_lateral, text="Origen de Video", font=ctk.CTkFont(size=14, weight="bold"), text_color=self.COLOR_CAFE_TEXTO)
+        # 1. Fuente de Video
+        lbl_sec1 = ctk.CTkLabel(
+            panel_lateral,
+            text="Origen de Video",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=self.COLOR_CAFE_TEXTO,
+        )
         lbl_sec1.pack(anchor="w", pady=(5, 5))
 
         self.opt_fuente = ctk.CTkOptionMenu(
@@ -229,19 +276,24 @@ class DashboardCustomTkinter(ctk.CTk):
         )
         if str(self.detector.fuente_video) == "1":
             self.opt_fuente.set("Cámara 1 (Secundaria)")
-        elif str(self.detector.fuente_video) in ("demo", "simulado"):
+        elif str(self.detector.fuente_video) == "demo":
             self.opt_fuente.set("Modo Simulación (Demo)")
         else:
             self.opt_fuente.set("Cámara 0 (Principal)")
-        self.opt_fuente.pack(fill="x", pady=(0, 12))
+        self.opt_fuente.pack(fill="x", pady=(0, 15))
 
-        # 2. Control de Sesión
-        lbl_sec2 = ctk.CTkLabel(panel_lateral, text="Control de Sesión", font=ctk.CTkFont(size=14, weight="bold"), text_color=self.COLOR_CAFE_TEXTO)
+        # 2. Control de Inferencia
+        lbl_sec2 = ctk.CTkLabel(
+            panel_lateral,
+            text="Control de Inferencia YOLO",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=self.COLOR_CAFE_TEXTO,
+        )
         lbl_sec2.pack(anchor="w", pady=(5, 5))
 
         self.btn_iniciar = ctk.CTkButton(
             panel_lateral,
-            text="Iniciar Clasificación",
+            text="▶ Iniciar Clasificación",
             command=self._iniciar_clasificacion,
             fg_color=self.COLOR_VERDE_ULSA,
             hover_color=self.COLOR_VERDE_HOVER,
@@ -250,68 +302,87 @@ class DashboardCustomTkinter(ctk.CTk):
         )
         self.btn_iniciar.pack(fill="x", pady=4)
 
-        frame_botones_sec = ctk.CTkFrame(panel_lateral, fg_color="transparent")
-        frame_botones_sec.pack(fill="x", pady=4)
-        frame_botones_sec.grid_columnconfigure((0, 1), weight=1)
+        frame_ctrl_btns = ctk.CTkFrame(panel_lateral, fg_color="transparent")
+        frame_ctrl_btns.pack(fill="x", pady=4)
+        frame_ctrl_btns.grid_columnconfigure((0, 1), weight=1)
 
         self.btn_pausar = ctk.CTkButton(
-            frame_botones_sec,
+            frame_ctrl_btns,
             text="Pausar",
             command=self._pausar_clasificacion,
-            fg_color="#8D6E63",
-            hover_color="#6D4C41",
+            fg_color="#FBC02D",
+            hover_color="#F9A825",
+            text_color="#212121",
             state="disabled",
             height=32,
+            font=ctk.CTkFont(size=12, weight="bold"),
         )
         self.btn_pausar.grid(row=0, column=0, padx=(0, 4), sticky="ew")
 
         self.btn_detener = ctk.CTkButton(
-            frame_botones_sec,
+            frame_ctrl_btns,
             text="Detener",
             command=self._detener_clasificacion,
             fg_color=self.COLOR_ROJO_DEFECTO,
             hover_color=self.COLOR_ROJO_HOVER,
             state="disabled",
             height=32,
+            font=ctk.CTkFont(size=12, weight="bold"),
         )
         self.btn_detener.grid(row=0, column=1, padx=(4, 0), sticky="ew")
 
         # 3. Telemetría en Vivo
-        lbl_sec3 = ctk.CTkLabel(panel_lateral, text="📡 Telemetría en Vivo", font=ctk.CTkFont(size=14, weight="bold"), text_color=self.COLOR_CAFE_TEXTO)
+        lbl_sec3 = ctk.CTkLabel(
+            panel_lateral,
+            text="Telemetría en Vivo",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=self.COLOR_CAFE_TEXTO,
+        )
         lbl_sec3.pack(anchor="w", pady=(15, 6))
 
         self.tile_fps = self._crear_tile_telemetria(panel_lateral, "FPS de Cámara", "0.0 FPS", self.COLOR_VERDE_ULSA)
         self.tile_latencia = self._crear_tile_telemetria(panel_lateral, "Latencia Inferencia", "0.0 ms", self.COLOR_CAFE_TEXTO)
-        self.tile_granos = self._crear_tile_telemetria(panel_lateral, "Granos en Cuadro", "0", self.COLOR_VERDE_ULSA)
+        self.tile_granos = self._crear_tile_telemetria(panel_lateral, "Granos en Frame", "0", self.COLOR_VERDE_ULSA)
 
-        # Estado de Válvula
-        frame_valvula = ctk.CTkFrame(panel_lateral, fg_color=self.COLOR_FONDO_CARD_LIGHT, corner_radius=10)
-        frame_valvula.pack(fill="x", pady=6)
-        lbl_valv = ctk.CTkLabel(frame_valvula, text="Válvula Neumática:", font=ctk.CTkFont(size=12, weight="bold"), text_color=self.COLOR_CAFE_TEXTO)
-        lbl_valv.pack(side="left", padx=10, pady=8)
+        # Estado del Actuador Neumático
+        frame_valv = ctk.CTkFrame(
+            panel_lateral,
+            fg_color=self.COLOR_FONDO_CARD_LIGHT,
+            corner_radius=self.RADIUS_SMALL,
+            border_width=1,
+            border_color=self.COLOR_BORDE_NEUMORFICO,
+        )
+        frame_valv.pack(fill="x", pady=6)
+
+        ctk.CTkLabel(
+            frame_valv,
+            text="Válvula Expulsora",
+            font=ctk.CTkFont(size=12),
+            text_color=self.COLOR_CAFE_TEXTO,
+        ).pack(side="left", padx=10, pady=8)
 
         self.badge_valvula = ctk.CTkButton(
-            frame_valvula,
+            frame_valv,
             text="STANDBY",
             fg_color="#EEEEEE",
             text_color="#666666",
             hover=False,
             height=24,
-            width=80,
             corner_radius=12,
             font=ctk.CTkFont(size=10, weight="bold"),
         )
         self.badge_valvula.pack(side="right", padx=10, pady=8)
 
-    def _crear_tile_telemetria(self, parent: ctk.CTkBaseClass, etiqueta: str, valor_ini: str, color_valor: str) -> ctk.CTkLabel:
-        """Crea un tile visual para telemetría con efecto neomórfico."""
-        # Tarjeta con efecto neomórfico: entrada sutil con sombra
+    def _crear_tile_telemetria(
+        self, parent: ctk.CTkBaseClass, etiqueta: str, valor_ini: str, color_valor: str
+    ) -> ctk.CTkLabel:
+        """Crea un tile visual para telemetría con estilo neomórfico."""
         frame = ctk.CTkFrame(
             parent,
             fg_color=self.COLOR_FONDO_CARD_LIGHT,
             corner_radius=self.RADIUS_SMALL,
             border_width=1,
-            border_color=self.COLOR_CAFE_CLARO,
+            border_color=self.COLOR_BORDE_NEUMORFICO,
         )
         frame.pack(fill="x", pady=4)
 
@@ -323,134 +394,315 @@ class DashboardCustomTkinter(ctk.CTk):
         return lbl_val
 
     def _construir_pestana_analitico(self) -> None:
-        """Construye el panel de estadísticas y gráficos con estilo neomórfico."""
+        """Construye el dashboard analítico con StatCards neumorfistas y gráfico reactivo."""
         self.tab_analitico.grid_columnconfigure((0, 1, 2, 3), weight=1)
         self.tab_analitico.grid_rowconfigure(1, weight=1)
 
-        # 4 Tarjetas Superiores de KPIs
-        # Efecto neomórfico: cards elevadas con profundidad
-        self.card_kpi_tiempo = self._crear_card_kpi(self.tab_analitico, 0, "⏱ Tiempo de Operación", "00:00:00", "Sesión activa")
-        self.card_kpi_consumo = self._crear_card_kpi(self.tab_analitico, 1, "⚡ Consumo Energético", "0.0000 kWh", f"P. Nom: {self.metricas.potencia_nominal_kw} kW")
-        self.card_kpi_granos = self._crear_card_kpi(self.tab_analitico, 2, "Granos Procesados", "0", "Calidad: 100.0%")
-        self.card_kpi_latencia = self._crear_card_kpi(self.tab_analitico, 3, "Latencia Promedio", "0.0 ms", "FPS Prom: 0.0")
+        # -----------------------------------------------------------------
+        # Fila 0: 4 StatCards Neumorfistas Principales
+        # -----------------------------------------------------------------
+        self.card_kpi_lotes = self._crear_statcard_neumorfica(
+            self.tab_analitico, 0, "Lotes Procesados", "0 Lotes", "Activo: En espera"
+        )
+        self.card_kpi_granos = self._crear_statcard_neumorfica(
+            self.tab_analitico, 1, "Estadísticas Generales", "0 Granos", "Calidad: 100.0% (0 Sanos)"
+        )
+        self.card_kpi_consumo = self._crear_statcard_neumorfica(
+            self.tab_analitico, 2, "Consumo Energético", "0.0000 kWh", f"Potencia: {self.gestor_lotes.potencia_hardware_kw:.2f} kW"
+        )
+        self.card_kpi_latencia = self._crear_statcard_neumorfica(
+            self.tab_analitico, 3, "Latencia y Hardware", "0.0 ms", "Válvula límite: 35.0 ms"
+        )
 
-        # Fila Central: 2 Paneles de Gráficos Analíticos
-        frame_graficos = ctk.CTkFrame(self.tab_analitico, fg_color="transparent")
-        frame_graficos.grid(row=1, column=0, columnspan=4, padx=0, pady=10, sticky="nsew")
-        frame_graficos.grid_columnconfigure((0, 1), weight=1)
-        frame_graficos.grid_rowconfigure(0, weight=1)
+        # -----------------------------------------------------------------
+        # Fila 1: Panel Central Dividido (Gráfico Reactivo + Control de Lote)
+        # -----------------------------------------------------------------
+        frame_central = ctk.CTkFrame(self.tab_analitico, fg_color="transparent")
+        frame_central.grid(row=1, column=0, columnspan=4, padx=0, pady=8, sticky="nsew")
+        frame_central.grid_columnconfigure(0, weight=3)  # Gráfico más amplio
+        frame_central.grid_columnconfigure(1, weight=2)  # Panel lateral de balance y acciones
+        frame_central.grid_rowconfigure(0, weight=1)
 
-        # Panel 1: Balance Sanos vs Defectos
-        card_balance = ctk.CTkFrame(frame_graficos, fg_color=self.COLOR_FONDO_CARD_LIGHT, corner_radius=12)
-        card_balance.grid(row=0, column=0, padx=(0, 6), pady=0, sticky="nsew")
-
-        lbl_bal_tit = ctk.CTkLabel(card_balance, text="Balance de Clasificación en Vivo", font=ctk.CTkFont(size=14, weight="bold"), text_color=self.COLOR_CAFE_TEXTO)
-        lbl_bal_tit.pack(anchor="w", padx=15, pady=(12, 10))
-
-        # Sanos
-        frame_sanos_hdr = ctk.CTkFrame(card_balance, fg_color="transparent")
-        frame_sanos_hdr.pack(fill="x", padx=15, pady=(5, 2))
-        ctk.CTkLabel(frame_sanos_hdr, text="🟢 Granos Sanos (Buenos)", font=ctk.CTkFont(size=12, weight="bold"), text_color=self.COLOR_VERDE_ULSA).pack(side="left")
-        self.lbl_sanos_val = ctk.CTkLabel(frame_sanos_hdr, text="0 (100.0%)", font=ctk.CTkFont(size=12, weight="bold"), text_color=self.COLOR_VERDE_ULSA)
-        self.lbl_sanos_val.pack(side="right")
-
-        self.bar_sanos = ctk.CTkProgressBar(card_balance, progress_color=self.COLOR_VERDE_ULSA, fg_color="#E8F5E9", height=14, corner_radius=7)
-        self.bar_sanos.pack(fill="x", padx=15, pady=(0, 15))
-        self.bar_sanos.set(1.0)
-
-        # Defectos
-        frame_def_hdr = ctk.CTkFrame(card_balance, fg_color="transparent")
-        frame_def_hdr.pack(fill="x", padx=15, pady=(5, 2))
-        ctk.CTkLabel(frame_def_hdr, text="🔴 Granos Defectuosos", font=ctk.CTkFont(size=12, weight="bold"), text_color=self.COLOR_ROJO_DEFECTO).pack(side="left")
-        self.lbl_defectos_val = ctk.CTkLabel(frame_def_hdr, text="0 (0.0%)", font=ctk.CTkFont(size=12, weight="bold"), text_color=self.COLOR_ROJO_DEFECTO)
-        self.lbl_defectos_val.pack(side="right")
-
-        self.bar_defectos = ctk.CTkProgressBar(card_balance, progress_color=self.COLOR_ROJO_DEFECTO, fg_color="#FFEBEE", height=14, corner_radius=7)
-        self.bar_defectos.pack(fill="x", padx=15, pady=(0, 15))
-        self.bar_defectos.set(0.0)
-
-        # Panel 2: Distribución de Defectos
-        # Efecto neomórfico: scrollable frame con tarjetas elevadas
-        card_defectos = ctk.CTkScrollableFrame(
-            frame_graficos,
+        # Panel Izquierdo: Gráfico Reactivo con Matplotlib FigureCanvasTkAgg
+        card_grafico = ctk.CTkFrame(
+            frame_central,
             fg_color=self.COLOR_FONDO_CARD_LIGHT,
             corner_radius=self.RADIUS_CARD,
             border_width=1,
-            border_color=self.COLOR_CAFE_CLARO,
+            border_color=self.COLOR_BORDE_NEUMORFICO,
         )
-        card_defectos.grid(row=0, column=1, padx=(6, 0), pady=0, sticky="nsew")
+        card_grafico.grid(row=0, column=0, padx=(0, 6), pady=0, sticky="nsew")
 
-        lbl_def_tit = ctk.CTkLabel(card_defectos, text="Distribución de Defectos en el Lote", font=ctk.CTkFont(size=14, weight="bold"), text_color=self.COLOR_CAFE_TEXTO)
-        lbl_def_tit.pack(anchor="w", padx=10, pady=(10, 8))
+        lbl_graf_hdr = ctk.CTkLabel(
+            card_grafico,
+            text="Frecuencia por Categoría de Granos (Reactivo en Tiempo Real)",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=self.COLOR_CAFE_TEXTO,
+        )
+        lbl_graf_hdr.pack(anchor="w", padx=16, pady=(12, 4))
 
-        self.defectos_widgets = {}
-        for def_nom, def_col in self.COLORES_DEFECTOS.items():
-            f_row = ctk.CTkFrame(card_defectos, fg_color="transparent")
-            f_row.pack(fill="x", padx=10, pady=3)
+        self.frame_canvas = ctk.CTkFrame(card_grafico, fg_color="transparent")
+        self.frame_canvas.pack(fill="both", expand=True, padx=12, pady=(0, 10))
 
-            # Efecto neomórfico: fila con sombra interna sutil
-            f_row._neomorph = True
+        # Inicialización de la figura Matplotlib
+        self.fig_reactiva = Figure(figsize=(6.4, 4.4), dpi=95, facecolor="#FFFFFF")
+        self.ax_reactivo = self.fig_reactiva.add_subplot(111)
+        self.canvas_reactivo = FigureCanvasTkAgg(self.fig_reactiva, master=self.frame_canvas)
+        self.canvas_widget = self.canvas_reactivo.get_tk_widget()
+        self.canvas_widget.pack(fill="both", expand=True)
 
-            lbl_d = ctk.CTkLabel(f_row, text=f"▪ {def_nom}", font=ctk.CTkFont(size=11, weight="bold"), text_color=self.COLOR_CAFE_TEXTO)
-            lbl_d.pack(side="left")
+        # Renderizar vista inicial de la gráfica
+        self._actualizar_grafico_reactivo()
 
-            lbl_cnt = ctk.CTkLabel(f_row, text="0 (0.0%)", font=ctk.CTkFont(size=11), text_color=self.COLOR_CAFE_TEXTO)
-            lbl_cnt.pack(side="right")
+        # Panel Derecho: Balance Sanos vs Defectos y Gestión Transaccional de Lote
+        card_derecha = ctk.CTkFrame(
+            frame_central,
+            fg_color=self.COLOR_FONDO_CARD_LIGHT,
+            corner_radius=self.RADIUS_CARD,
+            border_width=1,
+            border_color=self.COLOR_BORDE_NEUMORFICO,
+        )
+        card_derecha.grid(row=0, column=1, padx=(6, 0), pady=0, sticky="nsew")
 
-            bar_d = ctk.CTkProgressBar(card_defectos, progress_color=def_col, fg_color=self.COLOR_CAFE_CLARO, height=8, corner_radius=4)
-            bar_d.pack(fill="x", padx=10, pady=(0, 6))
-            bar_d.set(0.0)
+        lbl_bal_tit = ctk.CTkLabel(
+            card_derecha,
+            text="Balance de Clasificación del Lote",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=self.COLOR_CAFE_TEXTO,
+        )
+        lbl_bal_tit.pack(anchor="w", padx=16, pady=(12, 8))
 
-            self.defectos_widgets[def_nom] = (lbl_cnt, bar_d)
+        # Barra Sanos
+        frame_sanos_hdr = ctk.CTkFrame(card_derecha, fg_color="transparent")
+        frame_sanos_hdr.pack(fill="x", padx=16, pady=(4, 2))
+        ctk.CTkLabel(
+            frame_sanos_hdr,
+            text="Granos Sanos (Buenos)",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=self.COLOR_VERDE_ULSA,
+        ).pack(side="left")
+        self.lbl_sanos_val = ctk.CTkLabel(
+            frame_sanos_hdr,
+            text="0 (100.0%)",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=self.COLOR_VERDE_ULSA,
+        )
+        self.lbl_sanos_val.pack(side="right")
 
-        # Fila Inferior: Botones de Lote
-        frame_acciones = ctk.CTkFrame(self.tab_analitico, fg_color="transparent")
-        frame_acciones.grid(row=2, column=0, columnspan=4, pady=(5, 0), sticky="e")
+        self.bar_sanos = ctk.CTkProgressBar(
+            card_derecha,
+            progress_color=self.COLOR_VERDE_ULSA,
+            fg_color="#E8F5E9",
+            height=14,
+            corner_radius=7,
+        )
+        self.bar_sanos.pack(fill="x", padx=16, pady=(0, 12))
+        self.bar_sanos.set(1.0)
 
-        btn_guardar = ctk.CTkButton(
-            frame_acciones,
-            text="Guardar Resumen en MongoDB Atlas",
-            command=self._guardar_lote_mongodb,
+        # Barra Defectos
+        frame_def_hdr = ctk.CTkFrame(card_derecha, fg_color="transparent")
+        frame_def_hdr.pack(fill="x", padx=16, pady=(4, 2))
+        ctk.CTkLabel(
+            frame_def_hdr,
+            text="Granos Defectuosos",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=self.COLOR_ROJO_DEFECTO,
+        ).pack(side="left")
+        self.lbl_defectos_val = ctk.CTkLabel(
+            frame_def_hdr,
+            text="0 (0.0%)",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=self.COLOR_ROJO_DEFECTO,
+        )
+        self.lbl_defectos_val.pack(side="right")
+
+        self.bar_defectos = ctk.CTkProgressBar(
+            card_derecha,
+            progress_color=self.COLOR_ROJO_DEFECTO,
+            fg_color="#FFEBEE",
+            height=14,
+            corner_radius=7,
+        )
+        self.bar_defectos.pack(fill="x", padx=16, pady=(0, 16))
+        self.bar_defectos.set(0.0)
+
+        # Separador / Info de Estado
+        sep = ctk.CTkFrame(card_derecha, height=1, fg_color=self.COLOR_BORDE_NEUMORFICO)
+        sep.pack(fill="x", padx=16, pady=4)
+
+        # Botones de Acción de Lote y Sincronización
+        lbl_acc_tit = ctk.CTkLabel(
+            card_derecha,
+            text="Gestor Transaccional de Lotes",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=self.COLOR_CAFE_TEXTO,
+        )
+        lbl_acc_tit.pack(anchor="w", padx=16, pady=(8, 4))
+
+        self.btn_finalizar_lote = ctk.CTkButton(
+            card_derecha,
+            text="⏹ Finalizar Lote Activo (Guardar)",
+            command=self._finalizar_lote_manual,
             fg_color=self.COLOR_VERDE_ULSA,
             hover_color=self.COLOR_VERDE_HOVER,
-            height=34,
+            height=36,
             font=ctk.CTkFont(size=12, weight="bold"),
         )
-        btn_guardar.pack(side="left", padx=6)
+        self.btn_finalizar_lote.pack(fill="x", padx=16, pady=5)
 
-        btn_reiniciar = ctk.CTkButton(
-            frame_acciones,
-            text="Reiniciar Estadísticas / Nuevo Lote",
+        self.btn_sincronizar_nube = ctk.CTkButton(
+            card_derecha,
+            text="☁ Sincronizar Pendientes (Mongo)",
+            command=self._sincronizar_pendientes_manual,
+            fg_color="#0288D1",
+            hover_color="#0277BD",
+            height=32,
+            font=ctk.CTkFont(size=11, weight="bold"),
+        )
+        self.btn_sincronizar_nube.pack(fill="x", padx=16, pady=5)
+
+        self.btn_reiniciar = ctk.CTkButton(
+            card_derecha,
+            text="🔄 Reiniciar Estadísticas Globales",
             command=self._reiniciar_estadisticas,
             fg_color="#8D6E63",
             hover_color="#6D4C41",
-            height=34,
-            font=ctk.CTkFont(size=12, weight="bold"),
+            height=32,
+            font=ctk.CTkFont(size=11, weight="bold"),
         )
-        btn_reiniciar.pack(side="left", padx=6)
+        self.btn_reiniciar.pack(fill="x", padx=16, pady=5)
 
-    def _crear_card_kpi(self, parent: ctk.CTkBaseClass, col: int, titulo: str, valor_ini: str, sub_ini: str) -> dict:
-        """Crea una tarjeta KPI elegante con efecto neomórfico."""
-        # Card con efecto neomórfico: elevado con sombra suave
+        # Actualizar datos históricos iniciales
+        self._refrescar_estadisticas_historicas()
+
+    def _crear_statcard_neumorfica(
+        self,
+        parent: ctk.CTkBaseClass,
+        col: int,
+        titulo: str,
+        valor_ini: str,
+        sub_ini: str,
+    ) -> Dict[str, ctk.CTkLabel]:
+        """Crea una tarjeta KPI estilizada con efecto neomórfico y bordes redondeados."""
         card = ctk.CTkFrame(
             parent,
             fg_color=self.COLOR_FONDO_CARD_LIGHT,
             corner_radius=self.RADIUS_CARD,
             border_width=1,
-            border_color=self.COLOR_CAFE_CLARO,
+            border_color=self.COLOR_BORDE_NEUMORFICO,
         )
         card.grid(row=0, column=col, padx=5, pady=5, sticky="ew")
 
-        lbl_tit = ctk.CTkLabel(card, text=titulo, font=ctk.CTkFont(size=12), text_color=self.COLOR_GRIS_SEC)
-        lbl_tit.pack(anchor="w", padx=12, pady=(10, 2))
+        lbl_tit = ctk.CTkLabel(
+            card,
+            text=titulo,
+            font=ctk.CTkFont(size=12),
+            text_color=self.COLOR_GRIS_SEC,
+        )
+        lbl_tit.pack(anchor="w", padx=14, pady=(10, 2))
 
-        lbl_val = ctk.CTkLabel(card, text=valor_ini, font=ctk.CTkFont(size=20, weight="bold"), text_color=self.COLOR_CAFE_TEXTO)
-        lbl_val.pack(anchor="w", padx=12, pady=0)
+        lbl_val = ctk.CTkLabel(
+            card,
+            text=valor_ini,
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color=self.COLOR_CAFE_TEXTO,
+        )
+        lbl_val.pack(anchor="w", padx=14, pady=0)
 
-        lbl_sub = ctk.CTkLabel(card, text=sub_ini, font=ctk.CTkFont(size=11), text_color=self.COLOR_VERDE_ULSA)
-        lbl_sub.pack(anchor="w", padx=12, pady=(0, 10))
+        lbl_sub = ctk.CTkLabel(
+            card,
+            text=sub_ini,
+            font=ctk.CTkFont(size=11),
+            text_color=self.COLOR_VERDE_ULSA,
+        )
+        lbl_sub.pack(anchor="w", padx=14, pady=(0, 10))
 
         return {"valor": lbl_val, "sub": lbl_sub}
+
+    # -----------------------------------------------------------------
+    # Gráfica Reactiva con Matplotlib (Tiempo Real)
+    # -----------------------------------------------------------------
+
+    def _actualizar_grafico_reactivo(self) -> None:
+        """
+        Dibuja o actualiza la gráfica de barras horizontales reactiva:
+        - Si switch_modelo está en 13 Clases: muestra las 2 variedades sanas y los 11 defectos.
+        - Si switch_modelo está en Tri-clase: muestra Arabica_Bueno, Robusta_Bueno y Grano_Defecto.
+        Utiliza draw_idle() para no congelar la UI de CustomTkinter.
+        """
+        if self.ax_reactivo is None or self.fig_reactiva is None:
+            return
+
+        self.ax_reactivo.clear()
+
+        es_13_clases = bool(self.switch_modelo.get())
+
+        if es_13_clases:
+            # 13 Clases (11 Defectos + 2 Variedades Sanas)
+            categorias = [
+                "Arabica_Agrio",
+                "Arabica_Brocado",
+                "Arabica_Cereza",
+                "Arabica_Concha",
+                "Arabica_Inmaduro",
+                "Arabica_Negro",
+                "Arabica_Quebrado",
+                "Robusta_Brocado",
+                "Robusta_Cereza",
+                "Robusta_Negro",
+                "Robusta_Quebrado",
+                "Robusta_Bueno",
+                "Arabica_Bueno",
+            ]
+            etiquetas = [c.replace("_", " ") for c in categorias]
+            valores = [self.gestor_lotes.conteo_crudo.get(c, 0) for c in categorias]
+            colores = [self.COLORES_13_CLASES.get(c, "#757575") for c in categorias]
+        else:
+            # Modelo Tri-Clase (Campeón V10)
+            categorias = [
+                "Grano_Defecto",
+                "Robusta_Bueno",
+                "Arabica_Bueno",
+            ]
+            etiquetas = ["Grano Defecto", "Robusta Bueno", "Arábica Bueno"]
+            valores = [self.gestor_lotes.conteo_crudo.get(c, 0) for c in categorias]
+            colores = [self.COLORES_TRI_CLASE.get(c, "#197B30") for c in categorias]
+
+        # Configurar fondo y ejes limpios estilo neomórfico
+        self.ax_reactivo.set_facecolor("#FAFAFA")
+        self.fig_reactiva.patch.set_facecolor("#FFFFFF")
+
+        posiciones = range(len(categorias))
+        barras = self.ax_reactivo.barh(posiciones, valores, color=colores, height=0.62)
+
+        self.ax_reactivo.set_yticks(posiciones)
+        self.ax_reactivo.set_yticklabels(etiquetas, fontsize=8.5, color="#4A3B32", weight="medium")
+        self.ax_reactivo.xaxis.grid(True, linestyle="--", alpha=0.4, color="#CFD8DC")
+        self.ax_reactivo.set_axisbelow(True)
+
+        # Ocultar espinas innecesarias
+        for spine in ["top", "right"]:
+            self.ax_reactivo.spines[spine].set_visible(False)
+        for spine in ["left", "bottom"]:
+            self.ax_reactivo.spines[spine].set_color("#CFD8DC")
+
+        max_val = max(valores) if valores and max(valores) > 0 else 5
+        self.ax_reactivo.set_xlim(0, max_val * 1.25)
+        self.ax_reactivo.tick_params(axis="x", labelsize=8, colors="#757575")
+
+        # Agregar etiquetas de valor al final de cada barra
+        try:
+            self.ax_reactivo.bar_label(barras, padding=3, fontsize=8, color="#4A3B32", weight="bold")
+        except Exception:
+            pass
+
+        self.fig_reactiva.tight_layout()
+        if self.canvas_reactivo:
+            self.canvas_reactivo.draw_idle()
+
+    # -----------------------------------------------------------------
+    # Bucle Principal de Video y Telemetría (Hilo UI)
+    # -----------------------------------------------------------------
 
     def _bucle_actualizacion_frame(self) -> None:
         """
@@ -461,7 +713,7 @@ class DashboardCustomTkinter(ctk.CTk):
             return
 
         try:
-            # Drenar hasta el frame más reciente disponible
+            # Drenar cola hasta el frame más reciente disponible
             payload = None
             while True:
                 try:
@@ -476,11 +728,13 @@ class DashboardCustomTkinter(ctk.CTk):
                     target_w, target_h = 720, 480
                     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
                     pil_img = Image.fromarray(frame_rgb)
-                    
-                    self._ctk_image_ref = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(target_w, target_h))
+
+                    self._ctk_image_ref = ctk.CTkImage(
+                        light_image=pil_img, dark_image=pil_img, size=(target_w, target_h)
+                    )
                     self.lbl_video.configure(image=self._ctk_image_ref, text="")
 
-                # 2. Telemetría en vivo
+                # 2. Telemetría y Registro en Gestor de Lotes
                 detecciones = payload.get("detecciones", [])
                 fps = payload.get("fps", 0.0)
                 latencia_ms = payload.get("latencia_ms", 0.0)
@@ -488,6 +742,8 @@ class DashboardCustomTkinter(ctk.CTk):
 
                 if self.metricas.esta_activo:
                     self.metricas.registrar_detecciones(detecciones, fps, latencia_ms)
+                    # El Gestor de Lotes acumula conteos por lote y evalúa timeout
+                    self.gestor_lotes.registrar_detecciones(detecciones, fps, latencia_ms)
 
                 self.tile_fps.configure(text=f"{fps:.1f} FPS")
                 self.tile_latencia.configure(text=f"{latencia_ms:.1f} ms")
@@ -512,30 +768,40 @@ class DashboardCustomTkinter(ctk.CTk):
             self.after(15, self._bucle_actualizacion_frame)
 
     def _actualizar_metricas_ui(self) -> None:
-        """Actualiza los indicadores de KPIs y gráficos analíticos."""
-        # 1. Estado de MongoDB
+        """Actualiza los indicadores de KPIs, balance y la gráfica reactiva."""
+        # 1. Estado de Conexión MongoDB Atlas
         if self.db_manager.esta_conectado:
-            self.badge_db.configure(text="MongoDB: Conectado", fg_color=self.COLOR_VERDE_CLARO, text_color=self.COLOR_VERDE_ULSA)
+            self.badge_db.configure(
+                text="MongoDB: Conectado", fg_color=self.COLOR_VERDE_CLARO, text_color=self.COLOR_VERDE_ULSA
+            )
         else:
-            self.badge_db.configure(text="MongoDB: Modo Offline", fg_color="#FFF8E1", text_color=self.COLOR_AMARILLO_ALERTA)
+            self.badge_db.configure(
+                text="MongoDB: Modo Offline", fg_color="#FFF8E1", text_color=self.COLOR_AMARILLO_ALERTA
+            )
 
-        # 2. KPIs
+        # 2. StatCards Neumorfistas
         tiempo_str = self.metricas.obtener_tiempo_formateado()
         consumo_kwh = self.metricas.calcular_consumo_kwh()
         calidad_pct = self.metricas.obtener_porcentaje_calidad()
         latencia_prom = self.metricas.obtener_latencia_promedio()
         fps_prom = self.metricas.obtener_fps_promedio()
 
-        self.card_kpi_tiempo["valor"].configure(text=tiempo_str)
-        self.card_kpi_consumo["valor"].configure(text=f"{consumo_kwh:.4f} kWh")
+        # Card 0: Lotes
+        id_lote_txt = self.gestor_lotes.id_lote_actual if self.gestor_lotes.lote_activo else "En espera"
+        self.card_kpi_lotes["sub"].configure(text=f"Lote: {id_lote_txt}")
 
-        total_g = self.metricas.total_granos
-        sanos_g = self.metricas.total_sanos
-        def_g = self.metricas.total_defectuosos
+        # Card 1: Granos Totales
+        total_g = self.gestor_lotes.total_granos if self.gestor_lotes.lote_activo else self.metricas.total_granos
+        sanos_g = self.gestor_lotes.total_sanos if self.gestor_lotes.lote_activo else self.metricas.total_sanos
+        def_g = self.gestor_lotes.total_defectuosos if self.gestor_lotes.lote_activo else self.metricas.total_defectuosos
 
-        self.card_kpi_granos["valor"].configure(text=str(total_g))
+        self.card_kpi_granos["valor"].configure(text=f"{total_g} Granos")
         self.card_kpi_granos["sub"].configure(text=f"Calidad: {calidad_pct:.1f}% ({sanos_g} Sanos)")
 
+        # Card 2: Consumo Energético
+        self.card_kpi_consumo["valor"].configure(text=f"{consumo_kwh:.4f} kWh")
+
+        # Card 3: Latencia
         self.card_kpi_latencia["valor"].configure(text=f"{latencia_prom:.1f} ms")
         self.card_kpi_latencia["sub"].configure(text=f"FPS Prom: {fps_prom:.1f}")
 
@@ -554,15 +820,79 @@ class DashboardCustomTkinter(ctk.CTk):
             self.lbl_defectos_val.configure(text="0 (0.0%)")
             self.bar_defectos.set(0.0)
 
-        # 4. Distribución por tipo de defecto
-        porcentajes = self.metricas.obtener_porcentajes_defectos()
-        for def_nom, (lbl_cnt, bar_d) in self.defectos_widgets.items():
-            cnt = self.metricas.conteo_por_defecto.get(def_nom, 0)
-            pct = porcentajes.get(def_nom, 0.0)
-            lbl_cnt.configure(text=f"{cnt} ({pct:.1f}%)")
-            bar_d.set(min(1.0, max(0.0, pct / 100.0)))
+        # 4. Actualizar Gráfico Reactivo en Tiempo Real
+        self._actualizar_grafico_reactivo()
 
-    # --- Manejadores de Eventos ---
+    def _refrescar_estadisticas_historicas(self) -> None:
+        """Carga datos históricos consolidados desde SQLite para las StatCards."""
+        stats = self.db_manager.obtener_estadisticas_acumuladas()
+        total_lotes = stats.get("total_lotes", 0)
+        pendientes = stats.get("pendientes_sync", 0)
+        self.card_kpi_lotes["valor"].configure(text=f"{total_lotes} Lotes")
+        if not self.gestor_lotes.lote_activo:
+            self.card_kpi_lotes["sub"].configure(text=f"Pendientes Sync: {pendientes}")
+
+    # -----------------------------------------------------------------
+    # Manejadores de Switches de Modelo y SAHI
+    # -----------------------------------------------------------------
+
+    def _al_cambiar_switch_modelo(self) -> None:
+        """Alterna el paradigma de clasificación entre '13 Clases' y 'Tri-clase'."""
+        es_13_clases = bool(self.switch_modelo.get())
+        if es_13_clases:
+            self.switch_modelo.configure(text="13 Clases")
+            self.badge_modelo.configure(text="Modo: 13 Clases")
+        else:
+            self.switch_modelo.configure(text="Tri-clase")
+            self.badge_modelo.configure(text="Modo: Tri-clase")
+
+        modo_sahi = bool(self.switch_sahi.get())
+        self.gestor_lotes.configurar_modelo(modelo_13_clases=es_13_clases, modo_sahi=modo_sahi)
+        # Redibujar la gráfica inmediatamente con la nueva estructura de barras
+        self._actualizar_grafico_reactivo()
+
+    def _al_cambiar_switch_sahi(self) -> None:
+        """Alterna la inferencia SAHI (Slicing Aided Hyper Inference) On/Off."""
+        es_sahi = bool(self.switch_sahi.get())
+        self.switch_sahi.configure(text=f"SAHI: {'ON' if es_sahi else 'OFF'}")
+        es_13_clases = bool(self.switch_modelo.get())
+        self.gestor_lotes.configurar_modelo(modelo_13_clases=es_13_clases, modo_sahi=es_sahi)
+
+    # -----------------------------------------------------------------
+    # Gestión de Lotes y Eventos
+    # -----------------------------------------------------------------
+
+    def _finalizar_lote_manual(self) -> None:
+        """Fuerza la finalización manual y persistencia del lote activo."""
+        if not self.gestor_lotes.lote_activo:
+            messagebox.showinfo("MOPPI", "No hay ningún lote activo en curso para finalizar.")
+            return
+
+        resumen = self.gestor_lotes.finalizar_lote(motivo="manual")
+        if resumen:
+            self._refrescar_estadisticas_historicas()
+            messagebox.showinfo(
+                "Lote Finalizado",
+                f"Lote {resumen['id_lote']} cerrado exitosamente.\n"
+                f"Granos: {resumen['total_granos']} | Calidad: {resumen['porcentaje_calidad']}%\n"
+                f"Consumo: {resumen['consumo_kwh']} kWh\n"
+                f"Persistencia iniciada (SQLite + MongoDB).",
+            )
+
+    def _al_lote_finalizado_auto(self, resumen: Dict[str, Any]) -> None:
+        """Callback invocado por GestorLotes cuando se cierra por inactividad."""
+        self._refrescar_estadisticas_historicas()
+        print(f"[MOPPI] Lote {resumen.get('id_lote')} auto-finalizado por inactividad.")
+
+    def _sincronizar_pendientes_manual(self) -> None:
+        """Dispara sincronización manual de lotes pendientes hacia MongoDB Atlas."""
+        def _tarea():
+            count = self.db_manager.sincronizar_pendientes()
+            self._refrescar_estadisticas_historicas()
+            msg = f"Se sincronizaron {count} lotes con MongoDB Atlas." if count > 0 else "No hay lotes pendientes de sincronizar."
+            messagebox.showinfo("Sincronización Cloud", msg)
+
+        threading.Thread(target=_tarea, daemon=True).start()
 
     def _iniciar_clasificacion(self) -> None:
         """Inicia la sesión activa de clasificación con YOLO."""
@@ -603,25 +933,23 @@ class DashboardCustomTkinter(ctk.CTk):
             nueva_fuente = "demo"
         self.detector.cambiar_fuente(nueva_fuente)
 
-    def _guardar_lote_mongodb(self) -> None:
-        """Guarda el resumen del lote en MongoDB."""
-        resumen = self.metricas.generar_resumen_lote()
-
-        def _on_resultado(exito: bool, mensaje: str):
-            titulo = "MongoDB Atlas - Éxito" if exito else "MongoDB Atlas - Error"
-            messagebox.showinfo(titulo, mensaje) if exito else messagebox.showwarning(titulo, mensaje)
-
-        self.db_manager.guardar_resumen_lote_async(resumen, callback_resultado=_on_resultado)
-
     def _reiniciar_estadisticas(self) -> None:
-        """Reinicia los contadores de lote."""
+        """Reinicia los contadores de sesión."""
         self.metricas.reiniciar()
         self._actualizar_metricas_ui()
-        messagebox.showinfo("MOPPI", "Estadísticas del lote reiniciadas correctamente.")
+        messagebox.showinfo("MOPPI", "Estadísticas reiniciadas correctamente.")
 
     def _al_cerrar(self) -> None:
-        """Cierre ordenado de hilos y hardware."""
+        """Cierre ordenado de hilos, base de datos y detector."""
         self._consumidor_activo = False
+        try:
+            self.gestor_lotes.detener()
+        except Exception:
+            pass
+        try:
+            self.db_manager.cerrar()
+        except Exception:
+            pass
         try:
             self.detector.detener()
         except Exception:
