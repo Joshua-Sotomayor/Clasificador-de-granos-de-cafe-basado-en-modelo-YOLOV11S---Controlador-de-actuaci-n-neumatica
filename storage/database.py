@@ -55,6 +55,8 @@ DATA_RETENTION_DAYS: int = int(os.getenv("DATA_RETENTION_DAYS", "30"))
 HARDWARE_POWER_KW: float = float(os.getenv("HARDWARE_POWER_KW", "0.5"))
 PNEUMATIC_VALVE_LATENCY_LIMIT_MS: float = float(os.getenv("PNEUMATIC_VALVE_LATENCY_LIMIT_MS", "35.0"))
 CONFIDENCE_THRESHOLD: float = float(os.getenv("CONFIDENCE_THRESHOLD", "0.35"))
+TENANT_ID: str = os.getenv("TENANT_ID", "finca_alvizua")
+MAQUINA_ID: str = os.getenv("MAQUINA_ID", "moppi_01")
 
 
 def verificar_alarma_valvula(latencia_ms: float) -> bool:
@@ -89,6 +91,8 @@ class DatabaseManager:
         ruta_sqlite: Optional[str] = None,
         dias_retencion: Optional[int] = None,
         ruta_archivo_offline: Optional[str] = None,  # Compatibilidad con versión previa
+        tenant_id: Optional[str] = None,
+        maquina_id: Optional[str] = None,
     ) -> None:
         self.uri_mongo: str = uri_mongo if uri_mongo is not None else MONGO_URI
         self.nombre_db: str = nombre_db or MONGO_DATABASE
@@ -96,6 +100,8 @@ class DatabaseManager:
         self.ruta_sqlite: str = ruta_sqlite or LOCAL_DB_PATH
         self.dias_retencion: int = dias_retencion if dias_retencion is not None else DATA_RETENTION_DAYS
         self.ruta_archivo_offline = ruta_archivo_offline  # Para compatibilidad con tests unitarios existentes
+        self.tenant_id: str = tenant_id or TENANT_ID
+        self.maquina_id: str = maquina_id or MAQUINA_ID
 
         self._lock = threading.RLock()
         self._cliente_mongo = None
@@ -147,7 +153,7 @@ class DatabaseManager:
             conn.close()
 
     def _inicializar_sqlite(self) -> None:
-        """Crea la tabla 'lotes' e índices con garantías ACID en SQLite."""
+        """Crea la tabla 'lotes' e índices con garantías ACID en SQLite con soporte multi-tenant."""
         with self._lock:
             with self._conectar_sqlite() as conn:
                 conn.execute(
@@ -155,6 +161,8 @@ class DatabaseManager:
                     CREATE TABLE IF NOT EXISTS lotes (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         id_lote TEXT UNIQUE NOT NULL,
+                        tenant_id TEXT NOT NULL DEFAULT 'finca_alvizua',
+                        maquina_id TEXT NOT NULL DEFAULT 'moppi_01',
                         timestamp TEXT NOT NULL,
                         fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         modelo_activo TEXT NOT NULL,
@@ -176,10 +184,22 @@ class DatabaseManager:
                     );
                     """
                 )
+                # Migración no destructiva en caso de que la tabla ya existiera
+                try:
+                    conn.execute("ALTER TABLE lotes ADD COLUMN tenant_id TEXT DEFAULT 'finca_alvizua';")
+                except Exception:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE lotes ADD COLUMN maquina_id TEXT DEFAULT 'moppi_01';")
+                except Exception:
+                    pass
+
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_lotes_sync ON lotes(sync);")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_lotes_fecha ON lotes(fecha_creacion);")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_lotes_id ON lotes(id_lote);")
-        logger.info(f"SQLite inicializado correctamente en '{self.ruta_sqlite}' (Modo WAL).")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_lotes_tenant ON lotes(tenant_id);")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_lotes_maquina ON lotes(maquina_id);")
+        logger.info(f"SQLite inicializado correctamente en '{self.ruta_sqlite}' (Modo WAL, Multi-tenant).")
 
     def _conectar_mongo(self) -> bool:
         """Establece conexión y realiza ping de salud con MongoDB Atlas con timeout de 5000 ms."""
@@ -226,13 +246,17 @@ class DatabaseManager:
     def guardar_lote_transaccional(self, resumen: Dict[str, Any]) -> Tuple[bool, str]:
         """
         Guarda el resumen del lote siguiendo la política Offline-First segura:
-        1. Transacción local ACID en SQLite (sync=0).
+        1. Transacción local ACID en SQLite (sync=0) con soporte multi-tenant.
         2. Intento de subida a MongoDB Atlas.
         3. Si la inserción en Atlas es exitosa, marca localmente sync=1.
         4. Si falla la red o timeout, se mantiene sync=0 para sincronización posterior.
         """
         id_lote = resumen.get("id_lote") or f"LOTE-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        tenant_id = resumen.get("tenant_id") or self.tenant_id
+        maquina_id = resumen.get("maquina_id") or self.maquina_id
         resumen["id_lote"] = id_lote
+        resumen["tenant_id"] = tenant_id
+        resumen["maquina_id"] = maquina_id
         resumen.setdefault("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
         modelo_activo = resumen.get("modelo_activo", "13_clases")
@@ -260,15 +284,17 @@ class DatabaseManager:
                     cursor.execute(
                         """
                         INSERT OR REPLACE INTO lotes (
-                            id_lote, timestamp, modelo_activo, modo_sahi,
+                            id_lote, tenant_id, maquina_id, timestamp, modelo_activo, modo_sahi,
                             duracion_segundos, duracion_formato, consumo_kwh, potencia_nominal_kw,
                             total_granos, total_sanos, total_defectuosos, porcentaje_calidad,
                             latencia_promedio_ms, fps_promedio, conteo_crudo_json,
                             resumen_completo_json, sync, fecha_sync
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL);
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL);
                         """,
                         (
                             id_lote,
+                            tenant_id,
+                            maquina_id,
                             resumen["timestamp"],
                             modelo_activo,
                             modo_sahi,
@@ -286,7 +312,7 @@ class DatabaseManager:
                             resumen_completo_str,
                         ),
                     )
-            logger.info(f"Lote {id_lote} persistido localmente en SQLite (sync=0).")
+            logger.info(f"Lote {id_lote} (Tenant: {tenant_id}) persistido localmente en SQLite (sync=0).")
         except Exception as e:
             msg_err = f"Falla crítica en transacción SQLite para lote {id_lote}: {e}"
             logger.error(msg_err)
@@ -678,8 +704,12 @@ class GestorLotes:
         timeout_inactividad_seg: Optional[int] = None,
         potencia_hardware_kw: Optional[float] = None,
         callback_lote_finalizado: Optional[Callable[[Dict[str, Any]], None]] = None,
+        tenant_id: Optional[str] = None,
+        maquina_id: Optional[str] = None,
     ) -> None:
         self.db_manager = db_manager
+        self.tenant_id: str = tenant_id or (getattr(db_manager, "tenant_id", None) or TENANT_ID)
+        self.maquina_id: str = maquina_id or (getattr(db_manager, "maquina_id", None) or MAQUINA_ID)
         self.timeout_inactividad_seg: int = (
             timeout_inactividad_seg if timeout_inactividad_seg is not None else LOT_TIMEOUT_SECONDS
         )
@@ -867,6 +897,8 @@ class GestorLotes:
 
             resumen_lote = {
                 "id_lote": self.id_lote_actual,
+                "tenant_id": self.tenant_id,
+                "maquina_id": self.maquina_id,
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "motivo_cierre": motivo,
                 "modelo_activo": "13_clases" if self.modelo_13_clases else "tri_clase",

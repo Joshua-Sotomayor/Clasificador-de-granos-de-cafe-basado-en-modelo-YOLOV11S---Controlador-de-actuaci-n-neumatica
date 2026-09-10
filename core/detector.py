@@ -11,7 +11,48 @@ import time
 import threading
 import queue
 import numpy as np
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Union, Tuple, Callable
+
+
+# =====================================================================
+# CONSTANTES DE MAPEO ESPACIAL Y ACTUACIÓN MECATRÓNICA (ESP32)
+# =====================================================================
+ANCHO_BANDA_PX: int = 640
+ALTO_FRAME_PX: int = 640
+NUM_CANALES_VIRTUALES: int = 4
+ANCHO_CANAL_PX: int = 160        # 640 / 4 = 160 px para las 5 líneas divisorias de canales
+NUM_CARRILES_ACTUACION: int = 4  # 4 carriles virtuales para la neumática
+ANCHO_CARRIL_PX: int = 160       # canal = int(x_center // 160)
+LINEA_DISPARO_Y: int = 500       # Y = 500 coordenada de activación para válvulas ESP32
+
+
+def calcular_centroide(caja: Union[tuple, list]) -> Tuple[int, int]:
+    """
+    Extrae las coordenadas de la caja delimitadora (Bounding Box: x1, y1, x2, y2)
+    y calcula el centroide espacial (x_center, y_center).
+    """
+    x1, y1, x2, y2 = caja
+    x_center = int(round((x1 + x2) / 2.0))
+    y_center = int(round((y1 + y2) / 2.0))
+    return x_center, y_center
+
+
+def asignar_canal(
+    x_center: Union[int, float],
+    ancho_carril: int = ANCHO_CARRIL_PX,
+    total_canales: int = NUM_CARRILES_ACTUACION,
+) -> int:
+    """
+    Determina a qué canal o carril virtual [0 a 3] pertenece el grano mediante una división entera:
+    canal = int(x_center // 160)
+    Canal 0: [0 a 160 px]
+    Canal 1: [160 a 320 px]
+    Canal 2: [320 a 480 px]
+    Canal 3: [480 a 640 px]
+    Acota el valor en el rango seguro [0, total_canales - 1].
+    """
+    canal = int(x_center // ancho_carril)
+    return max(0, min(canal, total_canales - 1))
 
 
 class YOLODetector:
@@ -47,20 +88,26 @@ class YOLODetector:
         fuente_video: Union[int, str] = 0,
         cola_salida: Optional[queue.Queue] = None,
         confianza_minima: float = 0.30,
-        resolucion_captura: tuple = (640, 480),
+        resolucion_captura: tuple = (640, 640),
+        linea_disparo_y: int = LINEA_DISPARO_Y,
+        callback_actuacion: Optional[Callable[[int, Dict[str, Any]], None]] = None,
     ):
         """
         :param ruta_modelo: Ruta al archivo de pesos .pt entrenado.
         :param fuente_video: Índice de cámara (0, 1), ruta de video o 'demo'.
         :param cola_salida: Cola thread-safe donde se depositan los payloads para la UI.
         :param confianza_minima: Umbral mínimo de confianza para registrar una detección.
-        :param resolucion_captura: Tupla (ancho, alto) para la captura de video.
+        :param resolucion_captura: Tupla (ancho, alto) para la captura de video (default 640x640).
+        :param linea_disparo_y: Coordenada Y de la línea horizontal de disparo ESP32 (default 500).
+        :param callback_actuacion: Función callback opcional invocada al disparar una válvula neumática.
         """
         self.ruta_modelo = ruta_modelo
         self.fuente_video = fuente_video
         self.cola_salida = cola_salida if cola_salida is not None else queue.Queue(maxsize=3)
         self.confianza_minima = confianza_minima
         self.resolucion_captura = resolucion_captura
+        self.linea_disparo_y = linea_disparo_y
+        self.callback_actuacion = callback_actuacion
 
         # Estado del detector
         self._ejecutando = False
@@ -277,15 +324,19 @@ class YOLODetector:
             fps = 1.0 / max(delta, 1e-4)
             self._fps_captura = fps
 
-            # 3. Dibujar cajas de detección (solo si la clasificación está activa)
+            # 3. Dibujar cajas de detección, guías espaciales y evaluar disparo a ESP32
             if self.clasificacion_activa and detecciones_actuales:
+                self._evaluar_disparo_esp32(detecciones_actuales)
                 frame_anotado = self._dibujar_detecciones(frame, detecciones_actuales)
             else:
                 frame_anotado = frame.copy()
+                self._dibujar_guias_canales_y_disparo(frame_anotado)
 
-            # 4. Telemetría y estado de válvula
-            hay_defectos = any(d.get("es_defecto", False) for d in detecciones_actuales)
-            valvula_activa = hay_defectos and self.clasificacion_activa
+            # 4. Telemetría y estado de válvula neumática
+            valvula_activa = any(
+                d.get("es_defecto", False) and d.get("y_center", 0) >= self.linea_disparo_y
+                for d in detecciones_actuales
+            ) if self.clasificacion_activa else False
 
             self._dibujar_hud(frame_anotado, fps, latencia_ms, valvula_activa, len(detecciones_actuales))
 
@@ -368,7 +419,7 @@ class YOLODetector:
         return frame
 
     def _ejecutar_inferencia(self, frame: np.ndarray) -> List[Dict[str, Any]]:
-        """Ejecuta YOLOv8 optimizado con resolución adaptativa."""
+        """Ejecuta YOLOv8/v11 optimizado con resolución adaptativa y mapeo espacial."""
         if self.modo_simulado or self.modelo is None or str(self.fuente_video).lower() in ("demo", "simulado", "synthetic"):
             return self._simular_detecciones(frame.shape)
 
@@ -384,12 +435,18 @@ class YOLODetector:
 
                     nombre_clase = self.NOMBRES_CLASES_DEFECTO.get(clase_id, f"Clase_{clase_id}")
                     es_sano = clase_id in (2, 9) or "Bueno" in nombre_clase
+                    x_center, y_center = calcular_centroide((x1, y1, x2, y2))
+                    canal = asignar_canal(x_center)
 
                     detecciones.append({
                         "clase_id": clase_id,
                         "nombre_clase": nombre_clase,
                         "confianza": round(confianza, 2),
                         "caja": (x1, y1, x2, y2),
+                        "centroide": (x_center, y_center),
+                        "x_center": x_center,
+                        "y_center": y_center,
+                        "canal": canal,
                         "es_defecto": not es_sano,
                     })
         except Exception as e:
@@ -397,31 +454,127 @@ class YOLODetector:
             detecciones = []
         return detecciones
 
+    def _evaluar_disparo_esp32(self, detecciones: List[Dict[str, Any]]) -> List[int]:
+        """
+        Lógica de Disparo (Preparación para ESP32):
+        Si el y_center del defecto cruza la línea horizontal (y_center >= 500),
+        el sistema imprime en consola un mensaje estructurado:
+        [ACTUACION] Defecto en Canal {canal} - Enviando señal a ESP32...
+        Si es grano bueno (Arabica_Bueno o Robusta_Bueno), se deja pasar sin activar.
+        """
+        canales_disparados = []
+        for det in detecciones:
+            if det.get("es_defecto", False):
+                y_center = det.get("y_center", 0)
+                canal = det.get("canal", 0)
+                if y_center >= self.linea_disparo_y:
+                    canales_disparados.append(canal)
+                    print(f"[ACTUACION] Defecto en Canal {canal} - Enviando señal a ESP32...")
+                    if self.callback_actuacion:
+                        try:
+                            self.callback_actuacion(canal, det)
+                        except Exception as e:
+                            print(f"[YOLODetector] Error en callback de actuación: {e}")
+        return canales_disparados
+
+    def _dibujar_guias_canales_y_disparo(self, frame: np.ndarray) -> None:
+        """
+        Dibuja sobre el frame:
+        1. 5 líneas verticales divisorias para separar visualmente los 4 canales virtuales (cada 160 px en 640 px).
+        2. Línea horizontal roja en Y = 500 ('Línea de Disparo' / Trigger Line).
+        Optimizado con primitivas vectorizadas de OpenCV para cero impacto en FPS.
+        """
+        h, w = frame.shape[:2]
+
+        # 1. 5 Líneas verticales divisorias para 4 canales (x = 0, 160, 320, 480, 639)
+        paso_canal = w / float(NUM_CANALES_VIRTUALES)
+        for i in range(NUM_CANALES_VIRTUALES + 1):
+            x = min(int(round(i * paso_canal)), w - 1)
+            cv2.line(frame, (x, 0), (x, h), (180, 180, 180), 1, cv2.LINE_AA)
+            if i < NUM_CANALES_VIRTUALES:
+                x_centro = int((i + 0.5) * paso_canal)
+                cv2.putText(
+                    frame,
+                    f"CANAL {i}",
+                    (x_centro - 28, 48),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.36,
+                    (130, 145, 160),
+                    1,
+                    cv2.LINE_AA,
+                )
+
+        # 2. Línea de disparo horizontal roja en Y = 500
+        y_disparo = min(self.linea_disparo_y, h - 5)
+        cv2.line(frame, (0, y_disparo), (w, y_disparo), (0, 0, 255), 2, cv2.LINE_AA)
+        cv2.putText(
+            frame,
+            f"LINEA DE DISPARO (Y={y_disparo})",
+            (10, max(18, y_disparo - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (0, 0, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
     def _dibujar_detecciones(self, frame: np.ndarray, detecciones: List[Dict[str, Any]]) -> np.ndarray:
-        """Dibuja las cajas delimitadoras y etiquetas sobre el frame."""
+        """
+        Dibuja las guías espaciales, línea de disparo, cajas delimitadoras y centroides.
+        - Grano Defecto: Centroide rojo con aro blanco y etiqueta de canal C{canal}.
+        - Grano Sano: Centroide verde con aro blanco.
+        """
         frame_anotado = frame.copy()
+        self._dibujar_guias_canales_y_disparo(frame_anotado)
+
         for det in detecciones:
             x1, y1, x2, y2 = det["caja"]
-            nombre = det["nombre_clase"]
-            conf = det["confianza"]
+            nombre = det.get("nombre_clase", "Grano")
+            conf = det.get("confianza", 0.0)
             es_defecto = det.get("es_defecto", False)
 
-            color = self.COLOR_DEFECTO_BGR if es_defecto else self.COLOR_SANO_BGR
-            etiqueta = f"{nombre} {int(conf * 100)}%"
+            cx = det.get("x_center")
+            cy = det.get("y_center")
+            if cx is None or cy is None:
+                cx, cy = calcular_centroide((x1, y1, x2, y2))
+                det["x_center"] = cx
+                det["y_center"] = cy
+                det["centroide"] = (cx, cy)
 
+            canal = det.get("canal", asignar_canal(cx))
+            det["canal"] = canal
+
+            color = self.COLOR_DEFECTO_BGR if es_defecto else self.COLOR_SANO_BGR
+            etiqueta = f"{nombre} {int(conf * 100)}% [C{canal}]"
+
+            # Caja delimitadora (Bounding Box)
             cv2.rectangle(frame_anotado, (x1, y1), (x2, y2), color, 2)
-            (tw, th), _ = cv2.getTextSize(etiqueta, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+            (tw, th), _ = cv2.getTextSize(etiqueta, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
             cv2.rectangle(frame_anotado, (x1, max(0, y1 - th - 6)), (x1 + tw + 6, max(th + 6, y1)), color, -1)
             cv2.putText(
                 frame_anotado,
                 etiqueta,
                 (x1 + 3, max(th, y1 - 3)),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
+                0.42,
                 (255, 255, 255),
                 1,
                 cv2.LINE_AA,
             )
+
+            # Dibujo del Centroide del grano
+            if es_defecto:
+                # Centroide rojo con aro blanco
+                cv2.circle(frame_anotado, (cx, cy), 5, (0, 0, 255), -1, cv2.LINE_AA)
+                cv2.circle(frame_anotado, (cx, cy), 8, (255, 255, 255), 1, cv2.LINE_AA)
+                if cy >= self.linea_disparo_y:
+                    # Halo amarillo de advertencia cuando cruza la línea de disparo
+                    cv2.circle(frame_anotado, (cx, cy), 13, (0, 255, 255), 2, cv2.LINE_AA)
+            else:
+                # Grano sano: centroide verde con aro blanco
+                cv2.circle(frame_anotado, (cx, cy), 4, self.COLOR_SANO_BGR, -1, cv2.LINE_AA)
+                cv2.circle(frame_anotado, (cx, cy), 6, (255, 255, 255), 1, cv2.LINE_AA)
+
         return frame_anotado
 
     def _dibujar_hud(
@@ -430,63 +583,71 @@ class YOLODetector:
         fps: float,
         latencia_ms: float,
         valvula_activa: bool,
-        total_granos: int
+        total_granos: int,
     ) -> None:
-        """Dibuja la barra de telemetría superior."""
-        h, w, _ = frame.shape
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (0, 0), (w, 36), (30, 25, 20), -1)
-        cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+        """Dibuja la barra de telemetría superior optimizada para máxima velocidad."""
+        h, w = frame.shape[:2]
+        header_h = min(36, h)
+        sub = frame[0:header_h, 0:w]
+        overlay = np.full_like(sub, (30, 25, 20))
+        cv2.addWeighted(overlay, 0.85, sub, 0.15, 0, sub)
 
         if self.clasificacion_activa:
             texto = f"FPS: {fps:.1f} | Latencia: {latencia_ms:.1f}ms | Granos: {total_granos}"
             color_valvula = (0, 220, 0) if valvula_activa else (120, 120, 120)
-            estado_valvula = "VALVULA: DISPARO" if valvula_activa else "VALVULA: STANDBY"
+            estado_valvula = "ESP32: DISPARO" if valvula_activa else "ESP32: STANDBY"
         else:
             texto = f"FPS: {fps:.1f} | MODO: VISTA PREVIA (Inferencia en Espera)"
             color_valvula = (120, 120, 120)
-            estado_valvula = "VALVULA: STANDBY"
+            estado_valvula = "ESP32: STANDBY"
 
         cv2.putText(frame, texto, (12, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1, cv2.LINE_AA)
         cv2.circle(frame, (w - 170, 18), 6, color_valvula, -1)
         cv2.putText(frame, estado_valvula, (w - 155, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (220, 220, 220), 1, cv2.LINE_AA)
-
 
     def _generar_frame_sintetico(self) -> np.ndarray:
         """Genera un fondo sintético animado para pruebas sin cámara."""
         w, h = self.resolucion_captura
         frame = np.full((h, w, 3), (240, 238, 235), dtype=np.uint8)
 
-        cv2.rectangle(frame, (80, 50), (w - 80, h - 50), (210, 205, 200), -1)
-        cv2.rectangle(frame, (80, 50), (w - 80, h - 50), (160, 150, 140), 2)
+        cv2.rectangle(frame, (40, 45), (w - 40, h - 45), (210, 205, 200), -1)
+        cv2.rectangle(frame, (40, 45), (w - 40, h - 45), (160, 150, 140), 2)
 
         offset = int(time.time() * 60) % 40
-        for y in range(50 + offset, h - 50, 40):
-            cv2.line(frame, (85, y), (w - 85, y), (195, 190, 185), 1)
+        for y in range(45 + offset, h - 45, 40):
+            cv2.line(frame, (45, y), (w - 45, y), (195, 190, 185), 1)
 
         return frame
 
     def _simular_detecciones(self, shape: tuple) -> List[Dict[str, Any]]:
-        """Genera detecciones de prueba para el modo demo."""
+        """Genera detecciones de prueba con coordenadas espaciales completas para el modo demo."""
         h, w = shape[:2]
         import random
         num_granos = random.randint(1, 3)
         detecciones = []
         ids = [0, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10, 11, 12]
         for _ in range(num_granos):
-            gx = random.randint(110, w - 180)
-            gy = random.randint(80, h - 140)
+            gx = random.randint(50, max(70, w - 140))
+            gy = random.randint(60, max(100, h - 90))
             gw = random.randint(45, 75)
             gh = random.randint(35, 60)
             c_id = random.choice(ids)
             nombre = self.NOMBRES_CLASES_DEFECTO.get(c_id, "Arabica_Bueno")
-            es_sano = c_id in (2, 9)
+            es_sano = c_id in (2, 9) or "Bueno" in nombre
+
+            caja = (gx, gy, gx + gw, gy + gh)
+            cx, cy = calcular_centroide(caja)
+            canal = asignar_canal(cx)
 
             detecciones.append({
                 "clase_id": c_id,
                 "nombre_clase": nombre,
                 "confianza": round(random.uniform(0.78, 0.96), 2),
-                "caja": (gx, gy, gx + gw, gy + gh),
+                "caja": caja,
+                "centroide": (cx, cy),
+                "x_center": cx,
+                "y_center": cy,
+                "canal": canal,
                 "es_defecto": not es_sano,
             })
         return detecciones
@@ -508,5 +669,6 @@ class YOLODetector:
     def _procesar_frame(self, frame: np.ndarray) -> tuple:
         """Compatibilidad para tests unitarios."""
         dets = self._ejecutar_inferencia(frame)
+        self._evaluar_disparo_esp32(dets)
         dibujado = self._dibujar_detecciones(frame, dets)
         return dets, dibujado
