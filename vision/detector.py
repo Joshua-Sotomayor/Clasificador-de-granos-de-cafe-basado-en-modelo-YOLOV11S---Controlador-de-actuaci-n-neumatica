@@ -9,6 +9,12 @@ from core.detector import (
     NUM_CARRILES_ACTUACION,
     ANCHO_CARRIL_PX,
     LINEA_DISPARO_Y,
+    CAMERA_MATCHING_X_TOLERANCE_PX_DEFAULT,
+    CAMERA_SOURCE_TOP_DEFAULT,
+    CAMERA_SOURCE_BOTTOM_DEFAULT,
+    GranoRastreado,
+    SeguidorGranos,
+    fusionar_detecciones_doble_camara,
 )
 
 __all__ = [
@@ -22,4 +28,10 @@ __all__ = [
     'NUM_CARRILES_ACTUACION',
     'ANCHO_CARRIL_PX',
     'LINEA_DISPARO_Y',
+    'CAMERA_MATCHING_X_TOLERANCE_PX_DEFAULT',
+    'CAMERA_SOURCE_TOP_DEFAULT',
+    'CAMERA_SOURCE_BOTTOM_DEFAULT',
+    'GranoRastreado',
+    'SeguidorGranos',
+    'fusionar_detecciones_doble_camara',
 ]

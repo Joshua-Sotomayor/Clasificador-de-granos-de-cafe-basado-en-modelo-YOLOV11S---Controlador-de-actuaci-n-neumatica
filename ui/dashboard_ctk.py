@@ -250,6 +250,8 @@ class DashboardCustomTkinter(ctk.CTk):
         self._consumidor_activo = True
         self._ultimo_refresco_kpi = time.time()
         self._ctk_image_ref = None
+        self._ctk_img_top = None
+        self._ctk_img_bot = None
         self._ventana_logs: Optional[VentanaLogsToplevel] = None
 
         # Gestor de tiempo de uso diario con persistencia anti-apagones
@@ -385,7 +387,7 @@ class DashboardCustomTkinter(ctk.CTk):
         self.tab_vivo.grid_columnconfigure(1, weight=0)
         self.tab_vivo.grid_rowconfigure(0, weight=1)
 
-        # Card de Video
+        # Card de Video (Arquitectura Dual de 2 Columnas)
         self.card_video = ctk.CTkFrame(
             self.tab_vivo,
             fg_color="#1E1E1E",
@@ -394,11 +396,69 @@ class DashboardCustomTkinter(ctk.CTk):
             border_color=self.COLOR_BORDE_NEUMORFICO,
         )
         self.card_video.grid(row=0, column=0, padx=(0, 10), pady=5, sticky="nsew")
-        self.card_video.grid_rowconfigure(0, weight=1)
-        self.card_video.grid_columnconfigure(0, weight=1)
+        self.card_video.grid_rowconfigure(1, weight=1)
+        self.card_video.grid_columnconfigure((0, 1), weight=1)
 
-        self.lbl_video = ctk.CTkLabel(self.card_video, text="Iniciando cámara...", text_color="#CCCCCC")
-        self.lbl_video.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+        # Barra Superior de Sincronización Dual
+        frame_sync_hdr = ctk.CTkFrame(self.card_video, fg_color="#141414", corner_radius=8, height=36)
+        frame_sync_hdr.grid(row=0, column=0, columnspan=2, padx=8, pady=(8, 4), sticky="ew")
+        frame_sync_hdr.grid_columnconfigure(0, weight=1)
+
+        lbl_hdr_camaras = ctk.CTkLabel(
+            frame_sync_hdr,
+            text="SISTEMA DE INSPECCIÓN ÓPTICA DUAL | MAESTRO-ESCLAVO (FUSIÓN LÓGICA OR)",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#BBBBBB",
+        )
+        lbl_hdr_camaras.grid(row=0, column=0, padx=12, pady=6, sticky="w")
+
+        self.badge_dual_sync = ctk.CTkButton(
+            frame_sync_hdr,
+            text="DUAL CAMERA: SYNC",
+            fg_color="#197B30",
+            text_color="#FFFFFF",
+            hover=False,
+            height=24,
+            corner_radius=12,
+            font=ctk.CTkFont(size=10, weight="bold"),
+        )
+        self.badge_dual_sync.grid(row=0, column=1, padx=10, pady=6, sticky="e")
+
+        # Panel Izquierdo: Cámara Superior (Master / Dorsal)
+        frame_cam_top = ctk.CTkFrame(self.card_video, fg_color="#121212", corner_radius=8)
+        frame_cam_top.grid(row=1, column=0, padx=(8, 4), pady=(0, 8), sticky="nsew")
+        frame_cam_top.grid_rowconfigure(1, weight=1)
+        frame_cam_top.grid_columnconfigure(0, weight=1)
+
+        lbl_tit_top = ctk.CTkLabel(
+            frame_cam_top,
+            text="CÁMARA SUPERIOR (DORSAL - MAESTRO) | CONTROL CINEMÁTICO Y DISPARO",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color="#A5D6A7",
+        )
+        lbl_tit_top.grid(row=0, column=0, padx=6, pady=(6, 2), sticky="w")
+
+        self.lbl_video_top = ctk.CTkLabel(frame_cam_top, text="Iniciando cámara superior...", text_color="#888888")
+        self.lbl_video_top.grid(row=1, column=0, padx=4, pady=4, sticky="nsew")
+        # Mantener self.lbl_video como alias de la cámara superior para retrocompatibilidad
+        self.lbl_video = self.lbl_video_top
+
+        # Panel Derecho: Cámara Inferior (Slave / Ventral)
+        frame_cam_bot = ctk.CTkFrame(self.card_video, fg_color="#121212", corner_radius=8)
+        frame_cam_bot.grid(row=1, column=1, padx=(4, 8), pady=(0, 8), sticky="nsew")
+        frame_cam_bot.grid_rowconfigure(1, weight=1)
+        frame_cam_bot.grid_columnconfigure(0, weight=1)
+
+        lbl_tit_bot = ctk.CTkLabel(
+            frame_cam_bot,
+            text="CÁMARA INFERIOR (VENTRAL - ESCLAVO) | INSPECCIÓN DE REVERSO",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color="#90CAF9",
+        )
+        lbl_tit_bot.grid(row=0, column=0, padx=6, pady=(6, 2), sticky="w")
+
+        self.lbl_video_bottom = ctk.CTkLabel(frame_cam_bot, text="Iniciando cámara inferior...", text_color="#888888")
+        self.lbl_video_bottom.grid(row=1, column=0, padx=4, pady=4, sticky="nsew")
 
         # Panel Lateral Derecho (Controles y Telemetría)
         panel_lateral = ctk.CTkScrollableFrame(
@@ -1033,17 +1093,48 @@ class DashboardCustomTkinter(ctk.CTk):
                     break
 
             if payload:
-                # 1. Renderizar Frame de video
-                frame_bgr = payload.get("frame_bgr")
-                if frame_bgr is not None:
-                    target_w, target_h = 720, 480
-                    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-                    pil_img = Image.fromarray(frame_rgb)
+                # 1. Renderizar Frames sincronizados de Video (Cámara Superior e Inferior)
+                frame_top = payload.get("frame_top")
+                if frame_top is None:
+                    frame_top = payload.get("frame_bgr")
+                frame_bot = payload.get("frame_bottom")
+                dual_sync = payload.get("dual_sync", True)
 
+                target_w, target_h = 420, 360
+
+                if frame_top is not None and hasattr(self, "lbl_video_top"):
+                    frame_top_rgb = cv2.cvtColor(frame_top, cv2.COLOR_BGR2RGB)
+                    pil_top = Image.fromarray(frame_top_rgb)
+                    self._ctk_img_top = ctk.CTkImage(
+                        light_image=pil_top, dark_image=pil_top, size=(target_w, target_h)
+                    )
+                    self.lbl_video_top.configure(image=self._ctk_img_top, text="")
+                    self._ctk_image_ref = self._ctk_img_top
+                elif frame_top is not None and hasattr(self, "lbl_video"):
+                    frame_top_rgb = cv2.cvtColor(frame_top, cv2.COLOR_BGR2RGB)
+                    pil_top = Image.fromarray(frame_top_rgb)
                     self._ctk_image_ref = ctk.CTkImage(
-                        light_image=pil_img, dark_image=pil_img, size=(target_w, target_h)
+                        light_image=pil_top, dark_image=pil_top, size=(target_w, target_h)
                     )
                     self.lbl_video.configure(image=self._ctk_image_ref, text="")
+
+                if frame_bot is not None and hasattr(self, "lbl_video_bottom"):
+                    frame_bot_rgb = cv2.cvtColor(frame_bot, cv2.COLOR_BGR2RGB)
+                    pil_bot = Image.fromarray(frame_bot_rgb)
+                    self._ctk_img_bot = ctk.CTkImage(
+                        light_image=pil_bot, dark_image=pil_bot, size=(target_w, target_h)
+                    )
+                    self.lbl_video_bottom.configure(image=self._ctk_img_bot, text="")
+
+                if hasattr(self, "badge_dual_sync"):
+                    if dual_sync:
+                        self.badge_dual_sync.configure(
+                            text="DUAL CAMERA: SYNC", fg_color="#197B30", text_color="#FFFFFF"
+                        )
+                    else:
+                        self.badge_dual_sync.configure(
+                            text="DUAL CAMERA: DESYNC", fg_color="#E65100", text_color="#FFFFFF"
+                        )
 
                 # 2. Telemetría y Registro en Gestor de Lotes
                 detecciones = payload.get("detecciones", [])
