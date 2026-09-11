@@ -24,6 +24,151 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from core.detector import YOLODetector
 from core.metricas import GestorMetricas
 from storage.database import DatabaseManager, GestorLotes, MongoManager
+from storage.telemetria import GestorTiempoUso
+
+
+class VentanaLogsToplevel(ctk.CTkToplevel):
+    """
+    Ventana emergente independiente (Toplevel) para visualización y auditoría
+    en tiempo real de logs locales y alarmas del clasificador MOPPI.
+    """
+
+    def __init__(
+        self,
+        parent: ctk.CTk,
+        db_manager: Union[DatabaseManager, MongoManager],
+    ) -> None:
+        super().__init__(parent)
+        self.db_manager = db_manager
+
+        self.title("Auditoría de Eventos y Alarmas | MOPPI")
+        self.geometry("960x600")
+        self.minsize(750, 420)
+        self.configure(fg_color="#F5F6F8")
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        self._construir_ui()
+        self._cargar_logs()
+
+    def _construir_ui(self) -> None:
+        # Barra superior con filtros
+        frame_filtros = ctk.CTkFrame(
+            self,
+            fg_color="#FFFFFF",
+            corner_radius=12,
+            border_width=1,
+            border_color="#E0E0E0",
+        )
+        frame_filtros.grid(row=0, column=0, padx=16, pady=(12, 6), sticky="ew")
+
+        # Filtro Tipo
+        lbl_tipo = ctk.CTkLabel(
+            frame_filtros,
+            text="Filtro Tipo:",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#4A3B32",
+        )
+        lbl_tipo.pack(side="left", padx=(14, 4), pady=8)
+
+        self.opt_tipo = ctk.CTkOptionMenu(
+            frame_filtros,
+            values=["TODOS", "INFO", "WARNING", "ALARM"],
+            command=lambda _: self._cargar_logs(),
+            width=110,
+            fg_color="#197B30",
+            button_color="#145F25",
+        )
+        self.opt_tipo.set("TODOS")
+        self.opt_tipo.pack(side="left", padx=4, pady=8)
+
+        # Filtro Fecha
+        lbl_fecha = ctk.CTkLabel(
+            frame_filtros,
+            text="Rango Temporal:",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#4A3B32",
+        )
+        lbl_fecha.pack(side="left", padx=(16, 4), pady=8)
+
+        self.seg_fecha = ctk.CTkSegmentedButton(
+            frame_filtros,
+            values=["Hoy", "Últimos 3 días", "Última semana", "Todos"],
+            command=lambda _: self._cargar_logs(),
+            selected_color="#197B30",
+            selected_hover_color="#145F25",
+        )
+        self.seg_fecha.set("Hoy")
+        self.seg_fecha.pack(side="left", padx=4, pady=8)
+
+        # Botón Refrescar
+        btn_refresh = ctk.CTkButton(
+            frame_filtros,
+            text="↻ Refrescar",
+            command=self._cargar_logs,
+            width=95,
+            fg_color="#197B30",
+            hover_color="#145F25",
+            font=ctk.CTkFont(size=12, weight="bold"),
+        )
+        btn_refresh.pack(side="right", padx=14, pady=8)
+
+        # Consola de logs con CTkTextbox
+        self.txt_logs = ctk.CTkTextbox(
+            self,
+            fg_color="#1E1E1E",
+            text_color="#E0E0E0",
+            font=ctk.CTkFont(family="Consolas", size=11),
+            corner_radius=12,
+            border_width=1,
+            border_color="#E0E0E0",
+            wrap="word",
+        )
+        self.txt_logs.grid(row=1, column=0, padx=16, pady=(0, 14), sticky="nsew")
+
+        # Configurar tags de color en el widget interno tk.Text
+        try:
+            raw_text = self.txt_logs._textbox
+            raw_text.tag_config("ALARM", foreground="#FF5252", font=("Consolas", 11, "bold"))
+            raw_text.tag_config("WARNING", foreground="#FFB74D", font=("Consolas", 11, "bold"))
+            raw_text.tag_config("INFO", foreground="#81C784")
+            raw_text.tag_config("TIMESTAMP", foreground="#64B5F6")
+            raw_text.tag_config("DEF", foreground="#E0E0E0")
+        except Exception:
+            pass
+
+    def _cargar_logs(self) -> None:
+        """Consulta SQLite y renderiza los logs con estilos de color."""
+        tipo_sel = self.opt_tipo.get()
+        fecha_sel = self.seg_fecha.get()
+
+        logs = self.db_manager.obtener_logs_locales(
+            tipo=tipo_sel if tipo_sel != "TODOS" else None,
+            filtro_fecha=fecha_sel,
+            limite=500,
+        )
+
+        self.txt_logs.configure(state="normal")
+        self.txt_logs.delete("1.0", "end")
+
+        if not logs:
+            self.txt_logs.insert("end", "No se encontraron logs locales para el criterio seleccionado.\n")
+        else:
+            for item in logs:
+                ts = item.get("timestamp", "")
+                t = str(item.get("tipo", "INFO")).upper()
+                msg = item.get("mensaje", "")
+                tag = t if t in ("ALARM", "WARNING", "INFO") else "DEF"
+                try:
+                    self.txt_logs._textbox.insert("end", f"[{ts}] ", "TIMESTAMP")
+                    self.txt_logs._textbox.insert("end", f"[{t:7s}] ", tag)
+                    self.txt_logs._textbox.insert("end", f"{msg}\n", "DEF")
+                except Exception:
+                    self.txt_logs.insert("end", f"[{ts}] [{t:7s}] {msg}\n")
+
+        self.txt_logs.configure(state="disabled")
+        self.txt_logs.see("end")
 
 
 class DashboardCustomTkinter(ctk.CTk):
@@ -103,6 +248,10 @@ class DashboardCustomTkinter(ctk.CTk):
         self._consumidor_activo = True
         self._ultimo_refresco_kpi = time.time()
         self._ctk_image_ref = None
+        self._ventana_logs: Optional[VentanaLogsToplevel] = None
+
+        # Gestor de tiempo de uso diario con persistencia anti-apagones
+        self.gestor_tiempo = GestorTiempoUso()
 
         # Variables para Matplotlib Reactivo
         self.fig_reactiva: Optional[Figure] = None
@@ -222,9 +371,11 @@ class DashboardCustomTkinter(ctk.CTk):
 
         self.tab_vivo = self.tabview.add("Vista en Vivo")
         self.tab_analitico = self.tabview.add("Dashboard Analítico")
+        self.tab_logs = self.tabview.add("Visor de Logs y Alarmas")
 
         self._construir_pestana_vivo()
         self._construir_pestana_analitico()
+        self._construir_pestana_logs()
 
     def _construir_pestana_vivo(self) -> None:
         """Construye la vista de cámara en vivo y controles de hardware laterales."""
@@ -395,30 +546,37 @@ class DashboardCustomTkinter(ctk.CTk):
 
     def _construir_pestana_analitico(self) -> None:
         """Construye el dashboard analítico con StatCards neumorfistas y gráfico reactivo."""
-        self.tab_analitico.grid_columnconfigure((0, 1, 2, 3), weight=1)
+        self.tab_analitico.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
         self.tab_analitico.grid_rowconfigure(1, weight=1)
 
         # -----------------------------------------------------------------
-        # Fila 0: 4 StatCards Neumorfistas Principales
+        # Fila 0: 5 StatCards Neumorfistas Principales
         # -----------------------------------------------------------------
+        self.card_kpi_tiempo = self._crear_statcard_neumorfica(
+            self.tab_analitico,
+            0,
+            "Tiempo de Uso (Hoy)",
+            self.gestor_tiempo.obtener_tiempo_formateado(),
+            "Persistencia anti-apagones",
+        )
         self.card_kpi_lotes = self._crear_statcard_neumorfica(
-            self.tab_analitico, 0, "Lotes Procesados", "0 Lotes", "Activo: En espera"
+            self.tab_analitico, 1, "Lotes Procesados", "0 Lotes", "Activo: En espera"
         )
         self.card_kpi_granos = self._crear_statcard_neumorfica(
-            self.tab_analitico, 1, "Estadísticas Generales", "0 Granos", "Calidad: 100.0% (0 Sanos)"
+            self.tab_analitico, 2, "Estadísticas Generales", "0 Granos", "Calidad: 100.0% (0 Sanos)"
         )
         self.card_kpi_consumo = self._crear_statcard_neumorfica(
-            self.tab_analitico, 2, "Consumo Energético", "0.0000 kWh", f"Potencia: {self.gestor_lotes.potencia_hardware_kw:.2f} kW"
+            self.tab_analitico, 3, "Consumo Energético", "0.0000 kWh", f"Potencia: {self.gestor_lotes.potencia_hardware_kw:.2f} kW"
         )
         self.card_kpi_latencia = self._crear_statcard_neumorfica(
-            self.tab_analitico, 3, "Latencia y Hardware", "0.0 ms", "Válvula límite: 35.0 ms"
+            self.tab_analitico, 4, "Latencia y Hardware", "0.0 ms", "Válvula límite: 35.0 ms"
         )
 
         # -----------------------------------------------------------------
         # Fila 1: Panel Central Dividido (Gráfico Reactivo + Control de Lote)
         # -----------------------------------------------------------------
         frame_central = ctk.CTkFrame(self.tab_analitico, fg_color="transparent")
-        frame_central.grid(row=1, column=0, columnspan=4, padx=0, pady=8, sticky="nsew")
+        frame_central.grid(row=1, column=0, columnspan=5, padx=0, pady=8, sticky="nsew")
         frame_central.grid_columnconfigure(0, weight=3)  # Gráfico más amplio
         frame_central.grid_columnconfigure(1, weight=2)  # Panel lateral de balance y acciones
         frame_central.grid_rowconfigure(0, weight=1)
@@ -620,6 +778,157 @@ class DashboardCustomTkinter(ctk.CTk):
         return {"valor": lbl_val, "sub": lbl_sub}
 
     # -----------------------------------------------------------------
+    # Visor de Logs y Auditoría Local
+    # -----------------------------------------------------------------
+
+    def _construir_pestana_logs(self) -> None:
+        """Construye la vista integrada de auditoría de logs y alarmas."""
+        self.tab_logs.grid_columnconfigure(0, weight=1)
+        self.tab_logs.grid_rowconfigure(1, weight=1)
+
+        # Barra de Controles y Filtros
+        frame_filtros = ctk.CTkFrame(
+            self.tab_logs,
+            fg_color=self.COLOR_FONDO_CARD_LIGHT,
+            corner_radius=self.RADIUS_CARD,
+            border_width=1,
+            border_color=self.COLOR_BORDE_NEUMORFICO,
+        )
+        frame_filtros.grid(row=0, column=0, padx=10, pady=(6, 8), sticky="ew")
+
+        # Filtro Tipo
+        lbl_tipo = ctk.CTkLabel(
+            frame_filtros,
+            text="Filtro Tipo:",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=self.COLOR_CAFE_TEXTO,
+        )
+        lbl_tipo.pack(side="left", padx=(14, 4), pady=8)
+
+        self.opt_filtro_logs = ctk.CTkOptionMenu(
+            frame_filtros,
+            values=["TODOS", "INFO", "WARNING", "ALARM"],
+            command=lambda _: self._actualizar_visor_logs(),
+            width=110,
+            fg_color=self.COLOR_VERDE_ULSA,
+            button_color=self.COLOR_VERDE_HOVER,
+        )
+        self.opt_filtro_logs.set("TODOS")
+        self.opt_filtro_logs.pack(side="left", padx=4, pady=8)
+
+        # Filtro Fecha
+        lbl_fecha = ctk.CTkLabel(
+            frame_filtros,
+            text="Rango:",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=self.COLOR_CAFE_TEXTO,
+        )
+        lbl_fecha.pack(side="left", padx=(14, 4), pady=8)
+
+        self.seg_filtro_fecha = ctk.CTkSegmentedButton(
+            frame_filtros,
+            values=["Hoy", "Últimos 3 días", "Última semana", "Todos"],
+            command=lambda _: self._actualizar_visor_logs(),
+            selected_color=self.COLOR_VERDE_ULSA,
+            selected_hover_color=self.COLOR_VERDE_HOVER,
+        )
+        self.seg_filtro_fecha.set("Hoy")
+        self.seg_filtro_fecha.pack(side="left", padx=4, pady=8)
+
+        # Botón Desacoplar Ventana (CTkToplevel)
+        btn_desacoplar = ctk.CTkButton(
+            frame_filtros,
+            text="⤢ Ventana Flotante",
+            command=self._abrir_ventana_logs_toplevel,
+            width=135,
+            fg_color=self.COLOR_CAFE_TEXTO,
+            hover_color="#372B24",
+            font=ctk.CTkFont(size=12, weight="bold"),
+        )
+        btn_desacoplar.pack(side="right", padx=12, pady=8)
+
+        # Botón Refrescar
+        btn_refrescar = ctk.CTkButton(
+            frame_filtros,
+            text="↻ Actualizar Logs",
+            command=self._actualizar_visor_logs,
+            width=120,
+            fg_color=self.COLOR_VERDE_ULSA,
+            hover_color=self.COLOR_VERDE_HOVER,
+            font=ctk.CTkFont(size=12, weight="bold"),
+        )
+        btn_refrescar.pack(side="right", padx=(0, 6), pady=8)
+
+        # Área de Texto / Consola
+        self.txt_logs = ctk.CTkTextbox(
+            self.tab_logs,
+            fg_color="#1E1E1E",
+            text_color="#E0E0E0",
+            font=ctk.CTkFont(family="Consolas", size=11),
+            corner_radius=self.RADIUS_CARD,
+            border_width=1,
+            border_color=self.COLOR_BORDE_NEUMORFICO,
+            wrap="word",
+        )
+        self.txt_logs.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="nsew")
+
+        # Configurar tags de color
+        try:
+            raw_text = self.txt_logs._textbox
+            raw_text.tag_config("ALARM", foreground="#FF5252", font=("Consolas", 11, "bold"))
+            raw_text.tag_config("WARNING", foreground="#FFB74D", font=("Consolas", 11, "bold"))
+            raw_text.tag_config("INFO", foreground="#81C784")
+            raw_text.tag_config("TIMESTAMP", foreground="#64B5F6")
+            raw_text.tag_config("DEF", foreground="#E0E0E0")
+        except Exception:
+            pass
+
+        self._actualizar_visor_logs()
+
+    def _actualizar_visor_logs(self) -> None:
+        """Carga y muestra los logs locales en la pestaña del visor."""
+        if not hasattr(self, "txt_logs"):
+            return
+
+        tipo_sel = self.opt_filtro_logs.get()
+        fecha_sel = self.seg_filtro_fecha.get()
+
+        logs = self.db_manager.obtener_logs_locales(
+            tipo=tipo_sel if tipo_sel != "TODOS" else None,
+            filtro_fecha=fecha_sel,
+            limite=500,
+        )
+
+        self.txt_logs.configure(state="normal")
+        self.txt_logs.delete("1.0", "end")
+
+        if not logs:
+            self.txt_logs.insert("end", "No se encontraron logs locales para el criterio seleccionado.\n")
+        else:
+            for item in logs:
+                ts = item.get("timestamp", "")
+                t = str(item.get("tipo", "INFO")).upper()
+                msg = item.get("mensaje", "")
+                tag = t if t in ("ALARM", "WARNING", "INFO") else "DEF"
+                try:
+                    self.txt_logs._textbox.insert("end", f"[{ts}] ", "TIMESTAMP")
+                    self.txt_logs._textbox.insert("end", f"[{t:7s}] ", tag)
+                    self.txt_logs._textbox.insert("end", f"{msg}\n", "DEF")
+                except Exception:
+                    self.txt_logs.insert("end", f"[{ts}] [{t:7s}] {msg}\n")
+
+        self.txt_logs.configure(state="disabled")
+        self.txt_logs.see("end")
+
+    def _abrir_ventana_logs_toplevel(self) -> None:
+        """Abre o enfoca la ventana flotante independiente de auditoría de logs."""
+        if self._ventana_logs is not None and self._ventana_logs.winfo_exists():
+            self._ventana_logs.lift()
+            self._ventana_logs.focus_set()
+        else:
+            self._ventana_logs = VentanaLogsToplevel(self, self.db_manager)
+
+    # -----------------------------------------------------------------
     # Gráfica Reactiva con Matplotlib (Tiempo Real)
     # -----------------------------------------------------------------
 
@@ -786,6 +1095,11 @@ class DashboardCustomTkinter(ctk.CTk):
         latencia_prom = self.metricas.obtener_latencia_promedio()
         fps_prom = self.metricas.obtener_fps_promedio()
 
+        # Telemetría de Tiempo de Uso Anti-Apagones
+        clasificacion_activa = getattr(self.detector, "clasificacion_activa", False) or self.metricas.esta_activo
+        self.gestor_tiempo.tick(clasificacion_activa)
+        self.card_kpi_tiempo["valor"].configure(text=self.gestor_tiempo.obtener_tiempo_formateado())
+
         # Card 0: Lotes
         id_lote_txt = self.gestor_lotes.id_lote_actual if self.gestor_lotes.lote_activo else "En espera"
         self.card_kpi_lotes["sub"].configure(text=f"Lote: {id_lote_txt}")
@@ -942,6 +1256,16 @@ class DashboardCustomTkinter(ctk.CTk):
     def _al_cerrar(self) -> None:
         """Cierre ordenado de hilos, base de datos y detector."""
         self._consumidor_activo = False
+        try:
+            self.gestor_tiempo.guardar_estado()
+        except Exception:
+            pass
+        if self._ventana_logs is not None:
+            try:
+                if self._ventana_logs.winfo_exists():
+                    self._ventana_logs.destroy()
+            except Exception:
+                pass
         try:
             self.gestor_lotes.detener()
         except Exception:

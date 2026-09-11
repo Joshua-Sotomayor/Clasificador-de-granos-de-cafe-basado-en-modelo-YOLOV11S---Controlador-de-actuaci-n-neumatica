@@ -63,12 +63,19 @@ def verificar_alarma_valvula(latencia_ms: float) -> bool:
     """
     Verifica si la latencia del actuador supera el límite crítico establecido.
     Emite una advertencia de alarma y retorna True si hubo transgresión.
+    Registra el evento en la tabla local de auditoría SQLite si la BD está activa.
     """
     if latencia_ms > PNEUMATIC_VALVE_LATENCY_LIMIT_MS:
-        logger.warning(
+        msg = (
             f"ALERTA HARDWARE: Latencia de válvula ({latencia_ms:.2f} ms) excede "
             f"el umbral de seguridad de {PNEUMATIC_VALVE_LATENCY_LIMIT_MS:.1f} ms."
         )
+        logger.warning(msg)
+        if DatabaseManager._instancia_activa is not None:
+            try:
+                DatabaseManager._instancia_activa.registrar_log_local("ALARM", msg)
+            except Exception:
+                pass
         return True
     return False
 
@@ -82,6 +89,8 @@ class DatabaseManager:
     Gestiona la persistencia transaccional Offline-First con MongoDB Atlas y SQLite.
     Garantiza consistencia ACID local y sincronización asíncrona hacia la nube.
     """
+
+    _instancia_activa: Optional["DatabaseManager"] = None
 
     def __init__(
         self,
@@ -109,6 +118,7 @@ class DatabaseManager:
         self._coleccion_mongo = None
         self._conectado_mongo: bool = False
         self._demonio_activo: bool = False
+        DatabaseManager._instancia_activa = self
 
         # 1. Asegurar directorio y crear base SQLite local
         os.makedirs(os.path.dirname(os.path.abspath(self.ruta_sqlite)), exist_ok=True)
@@ -153,7 +163,7 @@ class DatabaseManager:
             conn.close()
 
     def _inicializar_sqlite(self) -> None:
-        """Crea la tabla 'lotes' e índices con garantías ACID en SQLite con soporte multi-tenant."""
+        """Crea las tablas 'lotes' y 'logs_locales' e índices con garantías ACID en SQLite."""
         with self._lock:
             with self._conectar_sqlite() as conn:
                 conn.execute(
@@ -199,7 +209,21 @@ class DatabaseManager:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_lotes_id ON lotes(id_lote);")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_lotes_tenant ON lotes(tenant_id);")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_lotes_maquina ON lotes(maquina_id);")
-        logger.info(f"SQLite inicializado correctamente en '{self.ruta_sqlite}' (Modo WAL, Multi-tenant).")
+
+                # Tabla para auditoría local de eventos y alarmas (Estrictamente Offline, jamás sincronizada con Atlas)
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS logs_locales (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT NOT NULL,
+                        tipo TEXT NOT NULL,
+                        mensaje TEXT NOT NULL
+                    );
+                    """
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs_locales(timestamp);")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_tipo ON logs_locales(tipo);")
+        logger.info(f"SQLite inicializado correctamente en '{self.ruta_sqlite}' (Modo WAL, Multi-tenant, Auditoría Local).")
 
     def _conectar_mongo(self) -> bool:
         """Establece conexión y realiza ping de salud con MongoDB Atlas con timeout de 5000 ms."""
@@ -313,9 +337,11 @@ class DatabaseManager:
                         ),
                     )
             logger.info(f"Lote {id_lote} (Tenant: {tenant_id}) persistido localmente en SQLite (sync=0).")
+            self.registrar_log_local("INFO", f"Lote {id_lote} guardado en SQLite local (Tenant: {tenant_id}, sync=0)")
         except Exception as e:
             msg_err = f"Falla crítica en transacción SQLite para lote {id_lote}: {e}"
             logger.error(msg_err)
+            self.registrar_log_local("ALARM", msg_err)
             if self.ruta_archivo_offline:
                 self._guardar_en_archivo_offline(resumen)
             return False, msg_err
@@ -344,20 +370,24 @@ class DatabaseManager:
                         )
 
                 logger.info(f"Lote {id_lote} sincronizado con MongoDB Atlas (ID: {res_mongo.inserted_id}).")
+                self.registrar_log_local("INFO", f"Lote {id_lote} sincronizado con MongoDB Atlas")
                 return True, f"Guardado en MongoDB Atlas y SQLite (ID: {res_mongo.inserted_id})"
             except (ServerSelectionTimeoutError, ConnectionFailure) as conn_err:
                 logger.warning(
                     f"Timeout (5000 ms) o fallo de conexión con Atlas al guardar lote {id_lote} ({conn_err}). "
                     f"Queda pendiente en SQLite (sync=0)."
                 )
+                self.registrar_log_local("WARNING", f"Fallo de conexión a Atlas al guardar lote {id_lote}. Queda offline.")
                 self._conectado_mongo = False
             except PyMongoError as pme:
                 logger.warning(
                     f"Error de PyMongo al guardar lote {id_lote} en Atlas ({pme}). Queda pendiente en SQLite."
                 )
+                self.registrar_log_local("WARNING", f"Error PyMongo al guardar lote {id_lote} en Atlas: {pme}")
                 self._conectado_mongo = False
             except Exception as e:
                 logger.warning(f"Error subiendo lote {id_lote} a MongoDB Atlas ({e}). Queda pendiente en SQLite.")
+                self.registrar_log_local("WARNING", f"Error subiendo lote {id_lote} a Atlas: {e}")
                 self._conectado_mongo = False
 
         return True, f"Guardado localmente en {self.ruta_sqlite} (Modo Offline)"
@@ -506,7 +536,7 @@ class DatabaseManager:
         fecha_corte_str = fecha_corte.strftime("%Y-%m-%d %H:%M:%S")
         resultados = {"sqlite_eliminados": 0, "mongo_eliminados": 0}
 
-        # 1. Purgar SQLite
+        # 1. Purgar SQLite (lotes)
         try:
             with self._lock:
                 with self._conectar_sqlite() as conn:
@@ -522,6 +552,25 @@ class DatabaseManager:
                 )
         except Exception as e:
             logger.error(f"Error purgando SQLite: {e}")
+
+        # 1b. Purgar logs_locales antiguos (> 7 días) para auditoría local
+        dias_logs = 7
+        fecha_corte_logs = (datetime.now() - timedelta(days=dias_logs)).strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with self._lock:
+                with self._conectar_sqlite() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "DELETE FROM logs_locales WHERE timestamp < ?;",
+                        (fecha_corte_logs,),
+                    )
+                    resultados["logs_eliminados"] = cursor.rowcount
+            if resultados.get("logs_eliminados", 0) > 0:
+                logger.info(
+                    f"Purga local de logs_locales: {resultados['logs_eliminados']} eventos anteriores a {dias_logs} días eliminados."
+                )
+        except Exception as e:
+            logger.error(f"Error purgando logs_locales en SQLite: {e}")
 
         # 2. Purgar MongoDB si hay conexión
         if self._conectado_mongo and self._coleccion_mongo is not None:
@@ -656,6 +705,94 @@ class DatabaseManager:
         except Exception as e:
             logger.debug(f"Error en archivo offline auxiliar: {e}")
 
+    # -----------------------------------------------------------------
+    # AUDITORÍA Y REGISTRO DE LOGS LOCALES (Strictly Offline)
+    # -----------------------------------------------------------------
+
+    def registrar_log_local(self, tipo: str, mensaje: str) -> None:
+        """
+        Inserta un evento de auditoría técnica en la tabla 'logs_locales' de SQLite.
+        Aislamiento Estricto: Bajo ninguna circunstancia estos registros se envían
+        ni sincronizan con MongoDB Atlas; su propósito es 100% de diagnóstico local.
+        :param tipo: 'INFO', 'WARNING', o 'ALARM'.
+        :param mensaje: Detalle técnico legible del evento.
+        """
+        tipo_normalizado = str(tipo).upper().strip()
+        if tipo_normalizado not in ("INFO", "WARNING", "ALARM", "ERROR"):
+            tipo_normalizado = "INFO"
+        if tipo_normalizado == "ERROR":
+            tipo_normalizado = "ALARM"
+
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with self._lock:
+                with self._conectar_sqlite() as conn:
+                    conn.execute(
+                        "INSERT INTO logs_locales (timestamp, tipo, mensaje) VALUES (?, ?, ?);",
+                        (ts, tipo_normalizado, str(mensaje)),
+                    )
+        except Exception as e:
+            logger.error(f"Error registrando log local en SQLite: {e}")
+
+    def obtener_logs_locales(
+        self,
+        tipo: Optional[str] = None,
+        filtro_fecha: Optional[str] = None,
+        limite: int = 250,
+    ) -> List[Dict[str, Any]]:
+        """
+        Consulta y filtra registros de auditoría local desde 'logs_locales'.
+        :param tipo: 'TODOS', 'INFO', 'WARNING', 'ALARM' o None.
+        :param filtro_fecha: 'Hoy', 'Últimos 3 días', 'Última semana', 'Todos' o None.
+        :param limite: Cantidad máxima de registros más recientes a recuperar.
+        """
+        query = "SELECT id, timestamp, tipo, mensaje FROM logs_locales WHERE 1=1"
+        params: List[Any] = []
+
+        if tipo and str(tipo).upper() != "TODOS":
+            t_filtro = str(tipo).upper().strip()
+            if t_filtro == "ERROR":
+                t_filtro = "ALARM"
+            query += " AND tipo = ?"
+            params.append(t_filtro)
+
+        ahora = datetime.now()
+        if filtro_fecha == "Hoy":
+            fecha_corte = ahora.strftime("%Y-%m-%d 00:00:00")
+            query += " AND timestamp >= ?"
+            params.append(fecha_corte)
+        elif filtro_fecha in ("Últimos 3 días", "Ultimos 3 dias"):
+            fecha_corte = (ahora - timedelta(days=3)).strftime("%Y-%m-%d 00:00:00")
+            query += " AND timestamp >= ?"
+            params.append(fecha_corte)
+        elif filtro_fecha in ("Última semana", "Ultima semana"):
+            fecha_corte = (ahora - timedelta(days=7)).strftime("%Y-%m-%d 00:00:00")
+            query += " AND timestamp >= ?"
+            params.append(fecha_corte)
+
+        query += " ORDER BY id DESC LIMIT ?;"
+        params.append(limite)
+
+        try:
+            with self._lock:
+                with self._conectar_sqlite() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(query, tuple(params))
+                    filas = cursor.fetchall()
+                    return [
+                        {
+                            "id": f["id"],
+                            "timestamp": f["timestamp"],
+                            "tipo": f["tipo"],
+                            "mensaje": f["mensaje"],
+                        }
+                        for f in filas
+                    ]
+        except Exception as e:
+            logger.error(f"Error consultando logs_locales en SQLite: {e}")
+            return []
+
+
 
 # =====================================================================
 # 3. GESTOR DE CICLO DE VIDA DE LOTES (GestorLotes)
@@ -778,6 +915,8 @@ class GestorLotes:
             self.historial_latencias.clear()
             self.historial_fps.clear()
             logger.info(f"Lote iniciado: {self.id_lote_actual} (Modelo: {'13 Clases' if self.modelo_13_clases else 'Tri-clase'})")
+            if hasattr(self.db_manager, "registrar_log_local"):
+                self.db_manager.registrar_log_local("INFO", f"Lote iniciado: {self.id_lote_actual} ({'13 Clases' if self.modelo_13_clases else 'Tri-clase'})")
             return self.id_lote_actual
 
     def registrar_detecciones(
@@ -918,6 +1057,11 @@ class GestorLotes:
 
             # Persistencia transaccional Offline-First
             self.db_manager.guardar_resumen_lote_async(resumen_lote)
+            if hasattr(self.db_manager, "registrar_log_local"):
+                self.db_manager.registrar_log_local(
+                    "INFO",
+                    f"Lote finalizado: {self.id_lote_actual} ({self.total_granos} granos, Calidad: {porcentaje_calidad}%, Motivo: {motivo})"
+                )
 
             # Notificar callback de UI si fue suministrado
             if self.callback_lote_finalizado:

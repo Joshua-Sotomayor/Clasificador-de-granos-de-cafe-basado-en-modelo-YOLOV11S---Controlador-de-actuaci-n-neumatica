@@ -59,10 +59,19 @@ class TestDashboardCustomTkinter(unittest.TestCase):
             self.assertEqual(app.switch_modelo.get(), 0)  # Tri-clase por defecto
 
             # 2. Verificar StatCards
+            self.assertTrue(hasattr(app, "card_kpi_tiempo"))
             self.assertTrue(hasattr(app, "card_kpi_lotes"))
             self.assertTrue(hasattr(app, "card_kpi_granos"))
             self.assertTrue(hasattr(app, "card_kpi_consumo"))
             self.assertTrue(hasattr(app, "card_kpi_latencia"))
+            self.assertTrue(hasattr(app, "gestor_tiempo"))
+            self.assertTrue(hasattr(app, "tab_logs"))
+            self.assertTrue(hasattr(app, "txt_logs"))
+
+            # Probar apertura de ventana toplevel de logs
+            app._abrir_ventana_logs_toplevel()
+            self.assertIsNotNone(app._ventana_logs)
+            self.assertTrue(app._ventana_logs.winfo_exists())
 
             # 3. Verificar Canvas y Figura Reactiva
             self.assertIsNotNone(app.fig_reactiva)
