@@ -1,15 +1,20 @@
-# Entornos virtuales
+# Entornos virtuales, dependencias y caches
 transformaciones/
 venv/
 .venv/
 env/
-
-# Archivos temporales de Python y compilados
+.env
 __pycache__/
+*.pyc
 *.py[cod]
 *$py.class
 *.so
 .pytest_cache/
+.vscode/
+
+# Directorios auxiliares excluidos de seguimiento
+artefactos_entrenamiento/
+instrucciones_SDD/
 
 # Datasets (imágenes y etiquetas procesadas)
 dataset_bruto/
@@ -26,11 +31,20 @@ dataset_yolo_triclase/labels/
 .DS_Store
 Thumbs.db
 
-# Configuración local y backups
-.env
-storage/*.json
+# Archivos binarios, modelos compilados y datasets pesados
+*.zip
+*.pt
+*.hef
+*.engine
+
+# Almacenamiento local SQLite y buffers temporales
 storage/*.db
 storage/*.db-wal
 storage/*.db-shm
+storage/*.json
+storage/*.tmp
 *.db
-*.zip
+
+# PlatformIO build outputs
+ESP32-Esclavo-MOPI/.pio/
+ESP32-Esclavo-MOPI/.vscode/
