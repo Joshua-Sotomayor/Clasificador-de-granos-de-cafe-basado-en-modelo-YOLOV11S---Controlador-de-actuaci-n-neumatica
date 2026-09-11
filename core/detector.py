@@ -300,6 +300,13 @@ class YOLODetector:
         12: "Robusta_Quebrado",
     }
 
+    # Taxonomía del modelo campeón Tri-Clase (V10)
+    NOMBRES_CLASES_TRICLASE = {
+        0: "Arabica_Bueno",
+        1: "Robusta_Bueno",
+        2: "Grano_Defecto",
+    }
+
     def __init__(
         self,
         ruta_modelo: str = "models/best.pt",
@@ -313,9 +320,10 @@ class YOLODetector:
         fuente_video_top: Optional[Union[int, str]] = None,
         fuente_video_bottom: Optional[Union[int, str]] = None,
         tolerancia_x_match: Optional[int] = None,
+        ruta_modelo_13clases: Optional[str] = None,
     ):
         """
-        :param ruta_modelo: Ruta al archivo de pesos .pt entrenado.
+        :param ruta_modelo: Ruta al archivo de pesos Tri-clase (.pt). Por defecto models/best.pt.
         :param fuente_video: Índice de cámara primaria o 'demo'.
         :param cola_salida: Cola thread-safe donde se depositan los payloads para la UI.
         :param confianza_minima: Umbral mínimo de confianza para registrar una detección.
@@ -326,8 +334,13 @@ class YOLODetector:
         :param fuente_video_top: Fuente para la cámara superior (Master / Dorsal).
         :param fuente_video_bottom: Fuente para la cámara inferior (Slave / Ventral).
         :param tolerancia_x_match: Tolerancia en píxeles para el acoplamiento espacial X.
+        :param ruta_modelo_13clases: Ruta al archivo de pesos de 13 clases (.pt). Por defecto models/best_13clases.pt.
         """
-        self.ruta_modelo = ruta_modelo
+        self.ruta_modelo_triclase = ruta_modelo or os.getenv("MODEL_PATH", "models/best.pt")
+        self.ruta_modelo_13clases = ruta_modelo_13clases or os.getenv("MODEL_13CLASES_PATH", "models/best_13clases.pt")
+        self.ruta_modelo = self.ruta_modelo_triclase
+        self.es_modo_13clases: bool = False
+
         self.fuente_video = fuente_video
         self.cola_salida = cola_salida if cola_salida is not None else queue.Queue(maxsize=3)
         self.confianza_minima = confianza_minima
@@ -368,7 +381,7 @@ class YOLODetector:
         self._solicitud_cambio_fuentes: Optional[Tuple[Union[int, str], Union[int, str]]] = None
         self._lock = threading.RLock()
 
-        # Modelo YOLO
+        # Modelo YOLO compartido globalmente (mismo modelo para ambas cámaras)
         self.modelo = None
         self.modo_simulado = False
         self._inicializar_modelo()
@@ -399,11 +412,16 @@ class YOLODetector:
         return self._ejecutando
 
     def _inicializar_modelo(self) -> None:
-        """Carga el modelo Ultralytics YOLO buscando en rutas comunes o activa modo simulado."""
+        """
+        Carga el modelo global compartido Ultralytics YOLO (Tri-clase por defecto o 13 Clases)
+        o activa modo simulado si el archivo no está presente.
+        El modelo seleccionado procesa tanto la cara dorsal (superior) como la cara ventral (inferior).
+        """
+        ruta_actual = self.ruta_modelo_13clases if self.es_modo_13clases else self.ruta_modelo_triclase
         ruta_encontrada = None
-        if self.ruta_modelo and os.path.exists(self.ruta_modelo):
-            ruta_encontrada = self.ruta_modelo
-        elif self.ruta_modelo in ("best.pt", "models/best.pt", "weights/best.pt", None, ""):
+        if ruta_actual and os.path.exists(ruta_actual):
+            ruta_encontrada = ruta_actual
+        elif not self.es_modo_13clases and (ruta_actual in ("best.pt", "models/best.pt", "weights/best.pt", None, "")):
             for cand in ["models/best.pt", "best.pt", "weights/best.pt"]:
                 if os.path.exists(cand):
                     ruta_encontrada = cand
@@ -412,19 +430,36 @@ class YOLODetector:
         try:
             from ultralytics import YOLO
             if ruta_encontrada:
-                print(f"[YOLODetector] Modelo detectado exitosamente: {ruta_encontrada}")
+                modo_txt = "13 Clases" if self.es_modo_13clases else "Tri-clase"
+                print(f"[YOLODetector] Modelo global ({modo_txt}) cargado exitosamente: {ruta_encontrada}")
                 self.modelo = YOLO(ruta_encontrada)
                 self.ruta_modelo = ruta_encontrada
                 self.modo_simulado = False
             else:
-                print(f"[YOLODetector] Modelo '{self.ruta_modelo}' no encontrado. Operando en modo demostrativo/simulado.")
+                print(f"[YOLODetector] Modelo global '{ruta_actual}' no encontrado. Operando en modo demostrativo/simulado.")
+                self.modelo = None
                 self.modo_simulado = True
         except ImportError:
             print("[YOLODetector] Ultralytics no disponible. Activando modo simulador sintético.")
+            self.modelo = None
             self.modo_simulado = True
         except Exception as e:
             print(f"[YOLODetector] Advertencia al cargar YOLO ({e}). Usando modo simulador.")
+            self.modelo = None
             self.modo_simulado = True
+
+    def cambiar_modelo(self, usar_13_clases: bool) -> bool:
+        """
+        Conmuta el modelo de red neuronal global compartido entre 'Tri-clase' y '13 Clases'.
+        Ambas cámaras (superior e inferior) utilizarán inmediatamente los mismos pesos actualizados.
+        :param usar_13_clases: True para activar 13 Clases, False para modelo Tri-clase (Campeón V10).
+        """
+        with self._lock:
+            self.es_modo_13clases = usar_13_clases
+            self._inicializar_modelo()
+            modo_txt = "13 Clases" if usar_13_clases else "Tri-clase (Campeón V10)"
+            print(f"[YOLODetector] Modelo global actualizado para ambas cámaras: {modo_txt}")
+            return not self.modo_simulado
 
     def iniciar(self) -> bool:
         """
@@ -835,8 +870,12 @@ class YOLODetector:
                     confianza = float(box.conf[0].item())
                     x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
 
-                    nombre_clase = self.NOMBRES_CLASES_DEFECTO.get(clase_id, f"Clase_{clase_id}")
-                    es_sano = clase_id in (2, 9) or "Bueno" in nombre_clase
+                    if self.es_modo_13clases:
+                        nombre_clase = self.NOMBRES_CLASES_DEFECTO.get(clase_id, f"Clase_{clase_id}")
+                        es_sano = clase_id in (2, 9) or "Bueno" in nombre_clase
+                    else:
+                        nombre_clase = self.NOMBRES_CLASES_TRICLASE.get(clase_id, f"Clase_{clase_id}")
+                        es_sano = clase_id in (0, 1) or "Bueno" in nombre_clase
                     x_center, y_center = calcular_centroide((x1, y1, x2, y2))
                     canal = asignar_canal(x_center)
 
@@ -872,8 +911,12 @@ class YOLODetector:
                     confianza = float(box.conf[0].item())
                     x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
 
-                    nombre_clase = self.NOMBRES_CLASES_DEFECTO.get(clase_id, f"Clase_{clase_id}")
-                    es_sano = clase_id in (2, 9) or "Bueno" in nombre_clase
+                    if self.es_modo_13clases:
+                        nombre_clase = self.NOMBRES_CLASES_DEFECTO.get(clase_id, f"Clase_{clase_id}")
+                        es_sano = clase_id in (2, 9) or "Bueno" in nombre_clase
+                    else:
+                        nombre_clase = self.NOMBRES_CLASES_TRICLASE.get(clase_id, f"Clase_{clase_id}")
+                        es_sano = clase_id in (0, 1) or "Bueno" in nombre_clase
                     x_center, y_center = calcular_centroide((x1, y1, x2, y2))
                     canal = asignar_canal(x_center)
 
@@ -1171,15 +1214,23 @@ class YOLODetector:
         import random
         num_granos = random.randint(1, 3)
         detecciones = []
-        ids = [0, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10, 11, 12]
+        if self.es_modo_13clases:
+            ids = [0, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10, 11, 12]
+            nombre_map = self.NOMBRES_CLASES_DEFECTO
+            es_sano_fn = lambda cid, nom: cid in (2, 9) or "Bueno" in nom
+        else:
+            ids = [0, 0, 1, 1, 2]
+            nombre_map = self.NOMBRES_CLASES_TRICLASE
+            es_sano_fn = lambda cid, nom: cid in (0, 1) or "Bueno" in nom
+
         for _ in range(num_granos):
             gx = random.randint(50, max(70, w - 140))
             gy = random.randint(60, max(100, h - 90))
             gw = random.randint(45, 75)
             gh = random.randint(35, 60)
             c_id = random.choice(ids)
-            nombre = self.NOMBRES_CLASES_DEFECTO.get(c_id, "Arabica_Bueno")
-            es_sano = c_id in (2, 9) or "Bueno" in nombre
+            nombre = nombre_map.get(c_id, "Arabica_Bueno")
+            es_sano = es_sano_fn(c_id, nombre)
 
             caja = (gx, gy, gx + gw, gy + gh)
             cx, cy = calcular_centroide(caja)
@@ -1218,18 +1269,32 @@ class YOLODetector:
                 canal = asignar_canal(cx_bot)
 
                 top_es_def = det_top.get("es_defecto", False)
-                if not top_es_def and random.random() < 0.35:
-                    c_id = 1  # Brocado ventral en grano aparentemente sano arriba
-                    nombre = "Arabica_Brocado"
-                    es_def = True
-                elif top_es_def:
-                    c_id = det_top.get("clase_id", 1)
-                    nombre = det_top.get("nombre_clase", "Arabica_Brocado")
-                    es_def = True
+                if self.es_modo_13clases:
+                    if not top_es_def and random.random() < 0.35:
+                        c_id = 1  # Brocado ventral en grano aparentemente sano arriba
+                        nombre = "Arabica_Brocado"
+                        es_def = True
+                    elif top_es_def:
+                        c_id = det_top.get("clase_id", 1)
+                        nombre = det_top.get("nombre_clase", "Arabica_Brocado")
+                        es_def = True
+                    else:
+                        c_id = 2
+                        nombre = "Arabica_Bueno"
+                        es_def = False
                 else:
-                    c_id = 2
-                    nombre = "Arabica_Bueno"
-                    es_def = False
+                    if not top_es_def and random.random() < 0.35:
+                        c_id = 2  # Grano_Defecto ventral
+                        nombre = "Grano_Defecto"
+                        es_def = True
+                    elif top_es_def:
+                        c_id = 2
+                        nombre = "Grano_Defecto"
+                        es_def = True
+                    else:
+                        c_id = det_top.get("clase_id", 0)
+                        nombre = self.NOMBRES_CLASES_TRICLASE.get(c_id, "Arabica_Bueno")
+                        es_def = False
 
                 gw = random.randint(45, 75)
                 gh = random.randint(35, 60)

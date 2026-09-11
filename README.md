@@ -6,7 +6,13 @@ El proyecto MOPPI (Finca Alvizua) consiste en una solucion mecatronica de clasif
 ## Arquitectura de Software y Hardware
 
 ### 1. Vision e Inferencia
-- Modelo Campeon: YOLO11s bajo paradigma Tri-Clase (Arabica_Bueno, Robusta_Bueno, Grano_Defecto).
+- Modelo de IA Unico y Compartido (Global): Un unico modelo de red neuronal procesa simultaneamente ambas camaras (camara superior/dorsal y camara inferior/ventral). El conjunto de datos de entrenamiento contiene imagenes tanto del anverso como del reverso del grano, por lo cual no existen modelos separados por camara.
+- Taxonomias de Clasificacion:
+  1. Modelo Tri-Clase (Campeon V10): models/best.pt (Arabica_Bueno, Robusta_Bueno, Grano_Defecto).
+  2. Modelo de 13 Clases: models/best_13clases.pt (taxonomia detallada de variedades y defectos).
+- Conmutacion Global: El switch de la cabecera del dashboard conmuta el modelo en ambas camaras simultaneamente.
+- Selectores de Origen de Video: Destinados con exclusividad a la asignacion de dispositivos fisicos de captura (hardware), implementando conmutacion inversa automatica (swap) ante colisiones de indice.
+- Pipeline de Actuacion: La camara superior determina carril virtual (0..3) y cruce de linea de disparo Y >= 500; la camara inferior inspecciona el reverso; la fusion logica booleana OR consolida la orden de eyeccion mecatronica hacia ESP32Bridge.
 - Resolucion de entrada: 640x640 pixeles a 204 FPS proyectados (latencia de inferencia de 4.9 ms).
 - Segmentacion espacial: Mapeo de 4 canales virtuales (160 px por carril) con determinacion analitica de centroides.
 

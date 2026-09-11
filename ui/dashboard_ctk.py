@@ -408,7 +408,7 @@ class DashboardCustomTkinter(ctk.CTk):
 
         lbl_hdr_camaras = ctk.CTkLabel(
             frame_sync_hdr,
-            text="SISTEMA DE INSPECCIÓN ÓPTICA DUAL | MAESTRO-ESCLAVO (FUSIÓN LÓGICA OR)",
+            text="SISTEMA DE INSPECCIÓN ÓPTICA DUAL | MAESTRO-ESCLAVO",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color="#BBBBBB",
         )
@@ -434,7 +434,7 @@ class DashboardCustomTkinter(ctk.CTk):
 
         lbl_tit_top = ctk.CTkLabel(
             frame_cam_top,
-            text="CÁMARA SUPERIOR (DORSAL - MAESTRO) | CONTROL CINEMÁTICO Y DISPARO",
+            text="CÁMARA SUPERIOR (MAESTRO) | INSPECCIÓN DE FRONTAL Y DISPARO",
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color="#A5D6A7",
         )
@@ -453,7 +453,7 @@ class DashboardCustomTkinter(ctk.CTk):
 
         lbl_tit_bot = ctk.CTkLabel(
             frame_cam_bot,
-            text="CÁMARA INFERIOR (VENTRAL - ESCLAVO) | INSPECCIÓN DE REVERSO",
+            text="CÁMARA INFERIOR (ESCLAVO) | INSPECCIÓN DE REVERSO",
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color="#90CAF9",
         )
@@ -1272,7 +1272,10 @@ class DashboardCustomTkinter(ctk.CTk):
     # -----------------------------------------------------------------
 
     def _al_cambiar_switch_modelo(self) -> None:
-        """Alterna el paradigma de clasificación entre '13 Clases' y 'Tri-clase'."""
+        """
+        Alterna el paradigma de clasificación global entre '13 Clases' y 'Tri-clase'.
+        IMPORTANTE: Ambas cámaras (superior e inferior) conmutan de modelo simultáneamente.
+        """
         es_13_clases = bool(self.switch_modelo.get())
         if es_13_clases:
             self.switch_modelo.configure(text="13 Clases")
@@ -1282,6 +1285,10 @@ class DashboardCustomTkinter(ctk.CTk):
             self.badge_modelo.configure(text="Modo: Tri-clase")
 
         modo_sahi = bool(self.switch_sahi.get())
+        # Actualizar modelo global compartido en YOLODetector (se aplica a ambas cámaras)
+        if hasattr(self, "detector") and hasattr(self.detector, "cambiar_modelo"):
+            self.detector.cambiar_modelo(usar_13_clases=es_13_clases)
+
         self.gestor_lotes.configurar_modelo(modelo_13_clases=es_13_clases, modo_sahi=modo_sahi)
         # Redibujar la gráfica inmediatamente con la nueva estructura de barras
         self._actualizar_grafico_reactivo()
