@@ -252,6 +252,8 @@ class DashboardCustomTkinter(ctk.CTk):
         self._ctk_image_ref = None
         self._ctk_img_top = None
         self._ctk_img_bot = None
+        self._fuente_top_actual = self.detector.fuente_video_top
+        self._fuente_bottom_actual = self.detector.fuente_video_bottom
         self._ventana_logs: Optional[VentanaLogsToplevel] = None
 
         # Gestor de tiempo de uso diario con persistencia anti-apagones
@@ -471,29 +473,55 @@ class DashboardCustomTkinter(ctk.CTk):
         )
         panel_lateral.grid(row=0, column=1, padx=(5, 0), pady=5, sticky="nsew")
 
-        # 1. Fuente de Video
+        # 1. Fuentes de Video Duales
         lbl_sec1 = ctk.CTkLabel(
             panel_lateral,
-            text="Origen de Video",
+            text="Origen de Video (Doble Cámara)",
             font=ctk.CTkFont(size=14, weight="bold"),
             text_color=self.COLOR_CAFE_TEXTO,
         )
-        lbl_sec1.pack(anchor="w", pady=(5, 5))
+        lbl_sec1.pack(anchor="w", pady=(5, 3))
 
-        self.opt_fuente = ctk.CTkOptionMenu(
+        lbl_top = ctk.CTkLabel(
             panel_lateral,
-            values=["Cámara 0 (Principal)", "Cámara 1 (Secundaria)", "Modo Simulación (Demo)"],
-            command=self._cambiar_fuente_video_ctk,
+            text="Cámara Superior (Master / Dorsal):",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=self.COLOR_GRIS_SEC,
+        )
+        lbl_top.pack(anchor="w", pady=(2, 2))
+
+        self.combo_cam_top = ctk.CTkOptionMenu(
+            panel_lateral,
+            values=["Cámara 0", "Cámara 1", "Cámara 2", "Demo / Sintético"],
+            command=self._al_cambiar_camara_top,
             fg_color=self.COLOR_VERDE_ULSA,
             button_color=self.COLOR_VERDE_HOVER,
+            height=28,
         )
-        if str(self.detector.fuente_video) == "1":
-            self.opt_fuente.set("Cámara 1 (Secundaria)")
-        elif str(self.detector.fuente_video) == "demo":
-            self.opt_fuente.set("Modo Simulación (Demo)")
-        else:
-            self.opt_fuente.set("Cámara 0 (Principal)")
-        self.opt_fuente.pack(fill="x", pady=(0, 15))
+        self.combo_cam_top.pack(fill="x", pady=(0, 6))
+        self.combo_cam_top.set(self._formatear_fuente_texto(self.detector.fuente_video_top))
+
+        # Alias para retrocompatibilidad
+        self.opt_fuente = self.combo_cam_top
+
+        lbl_bot = ctk.CTkLabel(
+            panel_lateral,
+            text="Cámara Inferior (Slave / Ventral):",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=self.COLOR_GRIS_SEC,
+        )
+        lbl_bot.pack(anchor="w", pady=(2, 2))
+
+        self.combo_cam_bottom = ctk.CTkOptionMenu(
+            panel_lateral,
+            values=["Cámara 0", "Cámara 1", "Cámara 2", "Demo / Sintético"],
+            command=self._al_cambiar_camara_bottom,
+            fg_color="#0277BD",
+            button_color="#01579B",
+            height=28,
+        )
+        self.combo_cam_bottom.pack(fill="x", pady=(0, 14))
+        self.combo_cam_bottom.set(self._formatear_fuente_texto(self.detector.fuente_video_bottom))
 
         # 2. Control de Inferencia
         lbl_sec2 = ctk.CTkLabel(
@@ -1308,7 +1336,10 @@ class DashboardCustomTkinter(ctk.CTk):
         self.btn_iniciar.configure(state="disabled")
         self.btn_pausar.configure(state="normal", text="Pausar")
         self.btn_detener.configure(state="normal")
-        self.opt_fuente.configure(state="disabled")
+        if hasattr(self, "combo_cam_top"):
+            self.combo_cam_top.configure(state="disabled")
+        if hasattr(self, "combo_cam_bottom"):
+            self.combo_cam_bottom.configure(state="disabled")
 
     def _pausar_clasificacion(self) -> None:
         """Pausa o reanuda la clasificación activa."""
@@ -1328,17 +1359,79 @@ class DashboardCustomTkinter(ctk.CTk):
         self.btn_iniciar.configure(state="normal")
         self.btn_pausar.configure(state="disabled", text="Pausar")
         self.btn_detener.configure(state="disabled")
-        self.opt_fuente.configure(state="normal")
+        if hasattr(self, "combo_cam_top"):
+            self.combo_cam_top.configure(state="normal")
+        if hasattr(self, "combo_cam_bottom"):
+            self.combo_cam_bottom.configure(state="normal")
+
+    @staticmethod
+    def _formatear_fuente_texto(fuente: Union[int, str]) -> str:
+        s = str(fuente).strip().lower()
+        if s in ("demo", "simulado", "synthetic"):
+            return "Demo / Sintético"
+        elif s == "0":
+            return "Cámara 0"
+        elif s == "1":
+            return "Cámara 1"
+        elif s == "2":
+            return "Cámara 2"
+        return f"Cámara {fuente}"
+
+    @staticmethod
+    def _parsear_fuente_texto(texto: str) -> Union[int, str]:
+        s = str(texto).strip()
+        if "Demo" in s or "Sintético" in s or "demo" in s.lower():
+            return "demo"
+        for digito in ("0", "1", "2"):
+            if digito in s:
+                return int(digito)
+        return s
+
+    def _al_cambiar_camara_top(self, seleccion: str) -> None:
+        """
+        Maneja el cambio de fuente para la cámara superior con conmutación cruzada (swap)
+        automática por colisión de índice con la cámara inferior.
+        """
+        nueva_top = self._parsear_fuente_texto(seleccion)
+        anterior_top = self._fuente_top_actual
+        actual_bot = self._fuente_bottom_actual
+
+        # Regla de Intercambio Automático si hay colisión de índice
+        if str(nueva_top) == str(actual_bot):
+            nueva_bot = anterior_top
+            self._fuente_bottom_actual = nueva_bot
+            if hasattr(self, "combo_cam_bottom"):
+                self.combo_cam_bottom.set(self._formatear_fuente_texto(nueva_bot))
+
+        self._fuente_top_actual = nueva_top
+        if hasattr(self, "combo_cam_top"):
+            self.combo_cam_top.set(self._formatear_fuente_texto(nueva_top))
+        self.detector.cambiar_fuentes_video(self._fuente_top_actual, self._fuente_bottom_actual)
+
+    def _al_cambiar_camara_bottom(self, seleccion: str) -> None:
+        """
+        Maneja el cambio de fuente para la cámara inferior con conmutación cruzada (swap)
+        automática por colisión de índice con la cámara superior.
+        """
+        nueva_bot = self._parsear_fuente_texto(seleccion)
+        anterior_bot = self._fuente_bottom_actual
+        actual_top = self._fuente_top_actual
+
+        # Regla de Intercambio Automático si hay colisión de índice
+        if str(nueva_bot) == str(actual_top):
+            nueva_top = anterior_bot
+            self._fuente_top_actual = nueva_top
+            if hasattr(self, "combo_cam_top"):
+                self.combo_cam_top.set(self._formatear_fuente_texto(nueva_top))
+
+        self._fuente_bottom_actual = nueva_bot
+        if hasattr(self, "combo_cam_bottom"):
+            self.combo_cam_bottom.set(self._formatear_fuente_texto(nueva_bot))
+        self.detector.cambiar_fuentes_video(self._fuente_top_actual, self._fuente_bottom_actual)
 
     def _cambiar_fuente_video_ctk(self, opcion_texto: str) -> None:
-        """Cambia la fuente de video según la selección."""
-        if "Principal" in opcion_texto or "0" in opcion_texto:
-            nueva_fuente = 0
-        elif "Secundaria" in opcion_texto or "1" in opcion_texto:
-            nueva_fuente = 1
-        else:
-            nueva_fuente = "demo"
-        self.detector.cambiar_fuente(nueva_fuente)
+        """Alias para retrocompatibilidad."""
+        self._al_cambiar_camara_top(opcion_texto)
 
     def _reiniciar_estadisticas(self) -> None:
         """Reinicia los contadores de sesión."""
@@ -1376,4 +1469,8 @@ class DashboardCustomTkinter(ctk.CTk):
                 self.esp32_bridge.cerrar()
             except Exception:
                 pass
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
         self.destroy()

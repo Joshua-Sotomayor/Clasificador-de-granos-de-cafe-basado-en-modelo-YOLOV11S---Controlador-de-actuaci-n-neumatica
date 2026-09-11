@@ -27,6 +27,9 @@ from core.detector import (
     LINEA_DISPARO_Y,
     CAMERA_MATCHING_X_TOLERANCE_PX_DEFAULT,
 )
+from core.metricas import GestorMetricas
+from storage.database import DatabaseManager
+from ui.dashboard_ctk import DashboardCustomTkinter
 
 
 class MockESP32Bridge:
@@ -209,5 +212,165 @@ class TestDualCameraVision(unittest.TestCase):
         self.detector.detener()
 
 
+
+
+class TestDualCameraSelectorsAndHotReload(unittest.TestCase):
+    """
+    Pruebas Unitarias para Versión 1.6.1:
+    - Swap automático por colisión de índice entre cámaras dorsal y ventral.
+    - Persistencia diferencial de índices físicos de captura.
+    - Reconfiguración dinámica de fuentes en caliente en YOLODetector.
+    """
+    @classmethod
+    def setUpClass(cls):
+        cls.ruta_db = "storage/test_dual_cam_db.db"
+
+    def setUp(self):
+        self.metricas = GestorMetricas(potencia_nominal_kw=0.5)
+        self.db_manager = DatabaseManager(
+            uri_mongo="",
+            ruta_sqlite=self.ruta_db,
+            dias_retencion=30,
+        )
+        self.cola = queue.Queue(maxsize=5)
+        self.detector = YOLODetector(
+            ruta_modelo="models/inexistente.pt",
+            fuente_video_top=0,
+            fuente_video_bottom=1,
+            cola_salida=self.cola,
+        )
+
+    def tearDown(self):
+        if hasattr(self, "detector") and self.detector.ejecutando:
+            self.detector.detener()
+        self.db_manager.cerrar()
+        if os.path.exists(self.ruta_db):
+            try:
+                os.remove(self.ruta_db)
+            except Exception:
+                pass
+
+    def test_swap_automatico_por_colision(self):
+        """
+        Verifica que al seleccionar para la cámara superior el índice que tiene la inferior,
+        la cámara inferior se reasigne automáticamente al índice previo de la superior (y viceversa).
+        """
+        app = DashboardCustomTkinter(
+            detector=self.detector,
+            metricas=self.metricas,
+            db_manager=self.db_manager,
+        )
+        try:
+            # Estado base inicial: Top = 0 ("Cámara 0"), Bottom = 1 ("Cámara 1")
+            self.assertEqual(app._fuente_top_actual, 0)
+            self.assertEqual(app._fuente_bottom_actual, 1)
+            self.assertEqual(app.combo_cam_top.get(), "Cámara 0")
+            self.assertEqual(app.combo_cam_bottom.get(), "Cámara 1")
+
+            # 1. Colisión provocada en Top: Seleccionamos Cámara 1 (actualmente asignada a Bottom)
+            # Regla: Bottom debe conmutar automáticamente a Cámara 0 (anterior Top)
+            app._al_cambiar_camara_top("Cámara 1")
+            self.assertEqual(app._fuente_top_actual, 1)
+            self.assertEqual(app._fuente_bottom_actual, 0)
+            self.assertEqual(app.combo_cam_top.get(), "Cámara 1")
+            self.assertEqual(app.combo_cam_bottom.get(), "Cámara 0")
+            self.assertEqual(self.detector.fuente_video_top, 1)
+            self.assertEqual(self.detector.fuente_video_bottom, 0)
+
+            # 2. Colisión inversa provocada en Bottom: Seleccionamos Cámara 1 (actualmente asignada a Top)
+            # Regla: Top debe conmutar automáticamente a Cámara 0 (anterior Bottom)
+            app._al_cambiar_camara_bottom("Cámara 1")
+            self.assertEqual(app._fuente_bottom_actual, 1)
+            self.assertEqual(app._fuente_top_actual, 0)
+            self.assertEqual(app.combo_cam_bottom.get(), "Cámara 1")
+            self.assertEqual(app.combo_cam_top.get(), "Cámara 0")
+            self.assertEqual(self.detector.fuente_video_top, 0)
+            self.assertEqual(self.detector.fuente_video_bottom, 1)
+        finally:
+            app._al_cerrar()
+
+    def test_persistencia_diferencial_de_indices(self):
+        """
+        Verifica que tras múltiples selecciones y alternancias manuales,
+        las dos cámaras mantengan siempre índices físicos diferenciales distintos.
+        """
+        app = DashboardCustomTkinter(
+            detector=self.detector,
+            metricas=self.metricas,
+            db_manager=self.db_manager,
+        )
+        try:
+            # Secuencia 1: Top pasa a Cámara 2 (no hay colisión con Bottom=1)
+            app._al_cambiar_camara_top("Cámara 2")
+            self.assertEqual(app._fuente_top_actual, 2)
+            self.assertEqual(app._fuente_bottom_actual, 1)
+            self.assertNotEqual(app._fuente_top_actual, app._fuente_bottom_actual)
+
+            # Secuencia 2: Bottom pasa a Cámara 2 (colisión -> Top debe conmutar a 1)
+            app._al_cambiar_camara_bottom("Cámara 2")
+            self.assertEqual(app._fuente_top_actual, 1)
+            self.assertEqual(app._fuente_bottom_actual, 2)
+            self.assertNotEqual(app._fuente_top_actual, app._fuente_bottom_actual)
+
+            # Secuencia 3: Top pasa a Cámara 0 (no hay colisión con Bottom=2)
+            app._al_cambiar_camara_top("Cámara 0")
+            self.assertEqual(app._fuente_top_actual, 0)
+            self.assertEqual(app._fuente_bottom_actual, 2)
+            self.assertNotEqual(app._fuente_top_actual, app._fuente_bottom_actual)
+
+            # Secuencia 4: Bottom pasa a Cámara 0 (colisión -> Top debe conmutar a 2)
+            app._al_cambiar_camara_bottom("Cámara 0")
+            self.assertEqual(app._fuente_top_actual, 2)
+            self.assertEqual(app._fuente_bottom_actual, 0)
+            self.assertNotEqual(app._fuente_top_actual, app._fuente_bottom_actual)
+
+            # Secuencia 5: Top pasa a Demo / Sintético
+            app._al_cambiar_camara_top("Demo / Sintético")
+            self.assertEqual(app._fuente_top_actual, "demo")
+            self.assertEqual(app._fuente_bottom_actual, 0)
+            self.assertNotEqual(str(app._fuente_top_actual), str(app._fuente_bottom_actual))
+        finally:
+            app._al_cerrar()
+
+    def test_reconfiguracion_fuentes_en_caliente(self):
+        """
+        Verifica que invocar cambiar_fuentes_video en caliente con el detector en ejecución
+        procese la solicitud sin excepciones no controladas y continúe publicando payloads sincronizados.
+        """
+        detector_demo = YOLODetector(
+            ruta_modelo="models/inexistente.pt",
+            fuente_video="demo",
+            cola_salida=queue.Queue(maxsize=5),
+        )
+        detector_demo.iniciar()
+        try:
+            time.sleep(0.3)
+
+            # Primer payload con fuentes iniciales demo
+            payload1 = detector_demo.cola_salida.get(timeout=3.0)
+            self.assertIsNotNone(payload1)
+            self.assertTrue(payload1["dual_sync"])
+
+            # Reconfiguración en caliente a índices de hardware (con fallback automático tolerante a fallos)
+            detector_demo.cambiar_fuentes_video(0, 1)
+
+            # Segundo payload post-reconfiguración (debe continuar emitiendo fotogramas duales válidos)
+            payload2 = detector_demo.cola_salida.get(timeout=4.0)
+            self.assertIsNotNone(payload2)
+            self.assertIn("frame_top", payload2)
+            self.assertIn("frame_bottom", payload2)
+            self.assertIn("dual_sync", payload2)
+            self.assertTrue(payload2["dual_sync"])
+            self.assertTrue(detector_demo.ejecutando)
+
+            # Reconfiguración en caliente de regreso a modo demo
+            detector_demo.cambiar_fuentes_video("demo", "demo")
+            payload3 = detector_demo.cola_salida.get(timeout=3.0)
+            self.assertIsNotNone(payload3)
+            self.assertTrue(payload3["dual_sync"])
+            self.assertTrue(detector_demo.ejecutando)
+        finally:
+            detector_demo.detener()
+
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main()

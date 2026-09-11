@@ -365,6 +365,7 @@ class YOLODetector:
         self._pausado = False
         self.clasificacion_activa = False
         self._solicitud_cambio_fuente: Optional[Union[int, str]] = None
+        self._solicitud_cambio_fuentes: Optional[Tuple[Union[int, str], Union[int, str]]] = None
         self._lock = threading.RLock()
 
         # Modelo YOLO
@@ -391,6 +392,11 @@ class YOLODetector:
         self._cap_top = None
         self._cap_bottom = None
         self._cap = None  # Alias para retrocompatibilidad
+
+    @property
+    def ejecutando(self) -> bool:
+        """Indica si el bucle de procesamiento del detector se encuentra activo."""
+        return self._ejecutando
 
     def _inicializar_modelo(self) -> None:
         """Carga el modelo Ultralytics YOLO buscando en rutas comunes o activa modo simulado."""
@@ -493,13 +499,26 @@ class YOLODetector:
 
         self._liberar_camara()
 
-    def cambiar_fuente(self, nueva_fuente: Union[int, str]) -> None:
+    def cambiar_fuentes_video(
+        self, fuente_top: Union[int, str], fuente_bottom: Union[int, str]
+    ) -> None:
         """
-        Solicita el cambio de fuente de video de forma segura y thread-safe
-        para evitar colisiones con el hilo de captura OpenCV.
+        Reconfigura dinámicamente ambas fuentes ópticas (Cámara Superior e Inferior)
+        de forma segura y desacoplada del hilo de captura OpenCV.
         """
         with self._lock:
-            self._solicitud_cambio_fuente = nueva_fuente
+            self.fuente_video_top = fuente_top
+            self.fuente_video_bottom = fuente_bottom
+            self.fuente_video = fuente_top
+            if self._ejecutando:
+                self._solicitud_cambio_fuentes = (fuente_top, fuente_bottom)
+            else:
+                self._liberar_camara()
+                self._abrir_camaras()
+
+    def cambiar_fuente(self, nueva_fuente: Union[int, str]) -> None:
+        """Alias para retrocompatibilidad, reconfigura la fuente superior."""
+        self.cambiar_fuentes_video(nueva_fuente, self.fuente_video_bottom)
 
     def _abrir_camaras(self) -> bool:
         """Abre ambas cámaras web con backend DirectShow en Windows para latencia mínima."""
@@ -594,20 +613,26 @@ class YOLODetector:
         if str(self.fuente_video_top).lower() in ("demo", "simulado", "synthetic") or self._cap_top is None:
             frame_top = self._generar_frame_sintetico()
         else:
-            ret, f_top = self._cap_top.read()
-            if ret and f_top is not None:
-                frame_top = f_top
-            else:
+            try:
+                ret, f_top = self._cap_top.read()
+                if ret and f_top is not None:
+                    frame_top = f_top
+                else:
+                    frame_top = self._generar_frame_sintetico()
+            except Exception:
                 frame_top = self._generar_frame_sintetico()
 
         # 2. Lectura Inferior (Esclavo)
         if str(self.fuente_video_bottom).lower() in ("demo", "simulado", "synthetic") or self._cap_bottom is None:
             frame_bottom = self._generar_frame_sintetico_inferior()
         else:
-            ret, f_bot = self._cap_bottom.read()
-            if ret and f_bot is not None:
-                frame_bottom = f_bot
-            else:
+            try:
+                ret, f_bot = self._cap_bottom.read()
+                if ret and f_bot is not None:
+                    frame_bottom = f_bot
+                else:
+                    frame_bottom = self._generar_frame_sintetico_inferior()
+            except Exception:
                 frame_bottom = self._generar_frame_sintetico_inferior()
 
         return frame_top, frame_bottom
@@ -626,14 +651,22 @@ class YOLODetector:
         ultimo_tiempo = time.perf_counter()
 
         while self._ejecutando:
-            # 0. Atender solicitudes de cambio de cámara en caliente de forma segura
-            if self._solicitud_cambio_fuente is not None:
+            # 0. Atender solicitudes de cambio de fuentes ópticas en caliente de forma segura
+            if self._solicitud_cambio_fuentes is not None or self._solicitud_cambio_fuente is not None:
                 with self._lock:
-                    nueva = self._solicitud_cambio_fuente
-                    self._solicitud_cambio_fuente = None
+                    if self._solicitud_cambio_fuentes is not None:
+                        nueva_top, nueva_bot = self._solicitud_cambio_fuentes
+                        self._solicitud_cambio_fuentes = None
+                        self._solicitud_cambio_fuente = None
+                    else:
+                        nueva_top = self._solicitud_cambio_fuente
+                        nueva_bot = self.fuente_video_bottom
+                        self._solicitud_cambio_fuente = None
+
                     self._liberar_camara()
-                    self.fuente_video = nueva
-                    self.fuente_video_top = nueva
+                    self.fuente_video = nueva_top
+                    self.fuente_video_top = nueva_top
+                    self.fuente_video_bottom = nueva_bot
                     self._abrir_camaras()
                     self._ultimas_detecciones = []
                     self._ultimas_detecciones_top = []
