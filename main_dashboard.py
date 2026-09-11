@@ -21,6 +21,7 @@ def main():
     """Función de arranque principal."""
     ruta_default = "models/best.pt" if os.path.exists("models/best.pt") else "best.pt"
     ruta_modelo = os.getenv("MODEL_PATH", ruta_default)
+    ruta_modelo_13clases = os.getenv("MODEL_13CLASES_PATH", "models/best_13clases.pt")
     fuente_video_raw = os.getenv("CAMERA_SOURCE", "0")
     fuente_video = int(fuente_video_raw) if fuente_video_raw.isdigit() else fuente_video_raw
     potencia_kw = float(os.getenv("HARDWARE_POWER_KW", "0.5"))
@@ -29,7 +30,8 @@ def main():
 
     print("=" * 60)
     print("Iniciando MOPPI - Sistema de Clasificación Óptica de Café")
-    print(f"Modelo: {ruta_modelo}")
+    print(f"Modelo Tri-Clase: {ruta_modelo}")
+    print(f"Modelo 13 Clases: {ruta_modelo_13clases}")
     print(f"Fuente Video: {fuente_video}")
     print(f"Potencia Nominal: {potencia_kw} kW")
     print("=" * 60)
@@ -41,6 +43,7 @@ def main():
     metricas = GestorMetricas(potencia_nominal_kw=potencia_kw)
     detector = YOLODetector(
         ruta_modelo=ruta_modelo,
+        ruta_modelo_13clases=ruta_modelo_13clases,
         fuente_video=fuente_video,
         confianza_minima=confianza_min,
         esp32_bridge=esp32_bridge,

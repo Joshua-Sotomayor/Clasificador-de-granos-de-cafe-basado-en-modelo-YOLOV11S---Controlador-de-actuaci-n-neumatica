@@ -372,5 +372,46 @@ class TestDualCameraSelectorsAndHotReload(unittest.TestCase):
         finally:
             detector_demo.detener()
 
+    def test_modelo_global_compartido_y_switch(self):
+        """
+        Verifica que el sistema utilice un modelo de IA único compartido para ambas cámaras
+        y que el switch del dashboard conmute el modelo simultáneamente para ambas vistas.
+        """
+        # Estado inicial del detector: Tri-clase (Campeón V10)
+        self.assertFalse(self.detector.es_modo_13clases)
+        self.assertEqual(self.detector.ruta_modelo, self.detector.ruta_modelo_triclase)
+
+        # Conmutar globalmente a 13 Clases
+        self.detector.cambiar_modelo(usar_13_clases=True)
+        self.assertTrue(self.detector.es_modo_13clases)
+
+        # Conmutar de regreso a Tri-clase
+        self.detector.cambiar_modelo(usar_13_clases=False)
+        self.assertFalse(self.detector.es_modo_13clases)
+
+        # Probar integración con el switch del Dashboard
+        app = DashboardCustomTkinter(
+            detector=self.detector,
+            metricas=self.metricas,
+            db_manager=self.db_manager,
+        )
+        try:
+            self.assertEqual(app.switch_modelo.get(), 0)
+            self.assertFalse(self.detector.es_modo_13clases)
+
+            # Operario activa switch a 13 Clases en cabecera
+            app.switch_modelo.select()
+            app._al_cambiar_switch_modelo()
+            self.assertTrue(self.detector.es_modo_13clases)
+            self.assertTrue(app.gestor_lotes.modelo_13_clases)
+
+            # Operario regresa a Tri-clase
+            app.switch_modelo.deselect()
+            app._al_cambiar_switch_modelo()
+            self.assertFalse(self.detector.es_modo_13clases)
+            self.assertFalse(app.gestor_lotes.modelo_13_clases)
+        finally:
+            app._al_cerrar()
+
 if __name__ == "__main__":
     unittest.main()
