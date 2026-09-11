@@ -91,6 +91,7 @@ class YOLODetector:
         resolucion_captura: tuple = (640, 640),
         linea_disparo_y: int = LINEA_DISPARO_Y,
         callback_actuacion: Optional[Callable[[int, Dict[str, Any]], None]] = None,
+        esp32_bridge: Optional[Any] = None,
     ):
         """
         :param ruta_modelo: Ruta al archivo de pesos .pt entrenado.
@@ -100,6 +101,7 @@ class YOLODetector:
         :param resolucion_captura: Tupla (ancho, alto) para la captura de video (default 640x640).
         :param linea_disparo_y: Coordenada Y de la línea horizontal de disparo ESP32 (default 500).
         :param callback_actuacion: Función callback opcional invocada al disparar una válvula neumática.
+        :param esp32_bridge: Instancia de ESP32Bridge para control de electroválvulas mecatrónicas.
         """
         self.ruta_modelo = ruta_modelo
         self.fuente_video = fuente_video
@@ -108,6 +110,7 @@ class YOLODetector:
         self.resolucion_captura = resolucion_captura
         self.linea_disparo_y = linea_disparo_y
         self.callback_actuacion = callback_actuacion
+        self.esp32_bridge = esp32_bridge
 
         # Estado del detector
         self._ejecutando = False
@@ -470,6 +473,11 @@ class YOLODetector:
                 if y_center >= self.linea_disparo_y:
                     canales_disparados.append(canal)
                     print(f"[ACTUACION] Defecto en Canal {canal} - Enviando señal a ESP32...")
+                    if self.esp32_bridge:
+                        try:
+                            self.esp32_bridge.disparar_canal(canal)
+                        except Exception as e:
+                            print(f"[YOLODetector] Error al disparar canal en ESP32: {e}")
                     if self.callback_actuacion:
                         try:
                             self.callback_actuacion(canal, det)

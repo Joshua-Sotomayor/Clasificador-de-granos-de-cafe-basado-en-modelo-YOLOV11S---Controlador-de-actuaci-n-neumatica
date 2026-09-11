@@ -14,6 +14,7 @@ load_dotenv()
 from core.detector import YOLODetector
 from core.metricas import GestorMetricas
 from storage.database import DatabaseManager, GestorLotes, MongoManager
+from hardware.serial_bridge import ESP32Bridge
 
 
 def main():
@@ -34,14 +35,16 @@ def main():
     print("=" * 60)
 
     # 1. Inicialización de componentes desacoplados
+    db_manager = DatabaseManager(uri_mongo=mongo_uri)
+    gestor_lotes = GestorLotes(db_manager=db_manager)
+    esp32_bridge = ESP32Bridge(db_manager=db_manager)
     metricas = GestorMetricas(potencia_nominal_kw=potencia_kw)
     detector = YOLODetector(
         ruta_modelo=ruta_modelo,
         fuente_video=fuente_video,
         confianza_minima=confianza_min,
+        esp32_bridge=esp32_bridge,
     )
-    db_manager = DatabaseManager(uri_mongo=mongo_uri)
-    gestor_lotes = GestorLotes(db_manager=db_manager)
 
     # 2. Lanzar interfaz gráfica
     if "--flet" in sys.argv:
@@ -69,6 +72,7 @@ def main():
             metricas=metricas,
             db_manager=db_manager,
             gestor_lotes=gestor_lotes,
+            esp32_bridge=esp32_bridge,
         )
         app.mainloop()
 

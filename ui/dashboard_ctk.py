@@ -225,6 +225,7 @@ class DashboardCustomTkinter(ctk.CTk):
         metricas: GestorMetricas,
         db_manager: Union[DatabaseManager, MongoManager],
         gestor_lotes: Optional[GestorLotes] = None,
+        esp32_bridge: Optional[Any] = None,
     ) -> None:
         super().__init__()
 
@@ -235,6 +236,7 @@ class DashboardCustomTkinter(ctk.CTk):
             db_manager=self.db_manager,
             callback_lote_finalizado=self._al_lote_finalizado_auto,
         )
+        self.esp32_bridge = esp32_bridge or getattr(self.detector, "esp32_bridge", None)
 
         # Configuración de ventana principal
         self.title("Clasificadora de Granos de Café Oro | Finca Alvizua")
@@ -1278,4 +1280,9 @@ class DashboardCustomTkinter(ctk.CTk):
             self.detector.detener()
         except Exception:
             pass
+        if self.esp32_bridge:
+            try:
+                self.esp32_bridge.cerrar()
+            except Exception:
+                pass
         self.destroy()

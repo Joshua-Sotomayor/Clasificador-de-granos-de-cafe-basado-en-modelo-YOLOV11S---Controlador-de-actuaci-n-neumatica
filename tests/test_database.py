@@ -7,6 +7,7 @@ import os
 import sys
 import unittest
 import json
+import uuid
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -15,18 +16,29 @@ from storage.database import MongoManager
 
 class TestMongoManager(unittest.TestCase):
     def setUp(self):
-        self.ruta_test_offline = "storage/test_offline_logs.json"
+        self.ruta_test_offline = f"storage/test_offline_logs_{uuid.uuid4().hex[:8]}.json"
+        self.ruta_test_db = f"storage/test_respaldo_{uuid.uuid4().hex[:8]}.db"
         if os.path.exists(self.ruta_test_offline):
             os.remove(self.ruta_test_offline)
 
         self.db_manager = MongoManager(
             uri_mongo="",
+            ruta_sqlite=self.ruta_test_db,
             ruta_archivo_offline=self.ruta_test_offline,
         )
 
     def tearDown(self):
+        self.db_manager.cerrar()
         if os.path.exists(self.ruta_test_offline):
-            os.remove(self.ruta_test_offline)
+            try:
+                os.remove(self.ruta_test_offline)
+            except Exception:
+                pass
+        if os.path.exists(self.ruta_test_db):
+            try:
+                os.remove(self.ruta_test_db)
+            except Exception:
+                pass
 
     def test_modo_offline_inicial(self):
         """Verifica que sin URI opere en modo offline sin arrojar excepciones."""
