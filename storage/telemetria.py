@@ -32,6 +32,8 @@ class GestorTiempoUso:
 
         self.fecha_actual: str = datetime.now().strftime("%Y-%m-%d")
         self.segundos_acumulados: int = 0
+        self.estado_operativo: str = "STANDBY"
+        self.requiere_reset_por_corte: bool = False
         self._ultimo_guardado_ts: float = time.time()
         self._ultimo_tick_ts: Optional[float] = None
 
@@ -42,7 +44,7 @@ class GestorTiempoUso:
         """
         Lee el archivo storage/estado_maquina.json.
         Si la fecha coincide con hoy, recupera los segundos acumulados.
-        Si es un día diferente o el archivo no existe, reinicia el contador a 0.
+        Detecta cortes abruptos si el estado previo era 'EN_MARCHA'.
         """
         with self._lock:
             hoy = datetime.now().strftime("%Y-%m-%d")
@@ -56,15 +58,28 @@ class GestorTiempoUso:
                     if fecha_guardada == hoy:
                         self.segundos_acumulados = int(data.get("segundos_uso", 0))
                     else:
-                        # Día nuevo: reiniciar a 0
+                        # Día nuevo: reiniciar contador a 0
                         self.segundos_acumulados = 0
-                        self.guardar_estado()
+
+                    estado_guardado = data.get("estado_operativo", "STANDBY")
+                    # Detección de parada abrupta (Seta de paro / corte eléctrico)
+                    if estado_guardado == "EN_MARCHA":
+                        self.requiere_reset_por_corte = True
+                        self.estado_operativo = "PARO"
+                    else:
+                        self.requiere_reset_por_corte = data.get("requiere_reset_por_corte", False)
+                        self.estado_operativo = estado_guardado
+
+                    self.guardar_estado()
                 except Exception:
-                    # Si el archivo estaba corrupto por un apagón previo, reestablecer
                     self.segundos_acumulados = 0
+                    self.estado_operativo = "STANDBY"
+                    self.requiere_reset_por_corte = False
                     self.guardar_estado()
             else:
                 self.segundos_acumulados = 0
+                self.estado_operativo = "STANDBY"
+                self.requiere_reset_por_corte = False
                 self.guardar_estado()
 
             return self.segundos_acumulados
@@ -83,6 +98,8 @@ class GestorTiempoUso:
             payload = {
                 "fecha": self.fecha_actual,
                 "segundos_uso": self.segundos_acumulados,
+                "estado_operativo": self.estado_operativo,
+                "requiere_reset_por_corte": self.requiere_reset_por_corte,
                 "ultima_actualizacion": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
 
@@ -102,6 +119,24 @@ class GestorTiempoUso:
                         os.remove(ruta_tmp)
                     except Exception:
                         pass
+
+    def actualizar_estado_operativo(self, nuevo_estado: str) -> None:
+        """
+        Actualiza y persiste atómicamente el estado operacional
+        (STANDBY, EN_MARCHA, PARO).
+        """
+        with self._lock:
+            self.estado_operativo = nuevo_estado
+            self.guardar_estado()
+
+    def reset_corte_abrupto(self) -> None:
+        """
+        Limpia la bandera de corte abrupto tras confirmación de purga por botón Reset.
+        """
+        with self._lock:
+            self.requiere_reset_por_corte = False
+            self.estado_operativo = "STANDBY"
+            self.guardar_estado()
 
     def tick(self, clasificacion_activa: bool) -> int:
         """

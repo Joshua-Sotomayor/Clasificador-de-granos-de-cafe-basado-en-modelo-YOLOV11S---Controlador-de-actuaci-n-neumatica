@@ -146,6 +146,11 @@ class DatabaseManager:
         """Indica si hay una conexión activa y verificada con MongoDB Atlas."""
         return self._conectado_mongo
 
+    @property
+    def conectado_mongo(self) -> bool:
+        """Indica si MongoDB está conectado."""
+        return self._conectado_mongo
+
     @contextmanager
     def _conectar_sqlite(self):
         """Crea una conexión con timeout y soporte para tipos JSON, garantizando su cierre seguro."""
@@ -632,6 +637,67 @@ class DatabaseManager:
 
         return []
 
+    def obtener_historial_lotes(
+        self,
+        filtro_modelo: Optional[str] = None,
+        filtro_fecha: Optional[str] = None,
+        limite: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """
+        Recupera el historial estructurado de lotes procesados para la tabla de registros del HMI.
+        Columnas: fecha, id_lote, total_granos, total_sanos, porcentaje_calidad, duracion_min
+        """
+        query = (
+            "SELECT id_lote, fecha_creacion, modelo, total_granos, total_sanos, "
+            "porcentaje_calidad, duracion_segundos, sync FROM lotes WHERE 1=1"
+        )
+        params: List[Any] = []
+
+        if filtro_modelo and str(filtro_modelo).lower() not in ("todos", "all", "none"):
+            query += " AND modelo LIKE ?"
+            params.append(f"%{filtro_modelo}%")
+
+        ahora = datetime.now()
+        if filtro_fecha == "Hoy":
+            f_hoy = ahora.strftime("%Y-%m-%d 00:00:00")
+            query += " AND fecha_creacion >= ?"
+            params.append(f_hoy)
+        elif filtro_fecha in ("Últimos 3 días", "Ultimos 3 dias"):
+            f_3d = (ahora - timedelta(days=3)).strftime("%Y-%m-%d 00:00:00")
+            query += " AND fecha_creacion >= ?"
+            params.append(f_3d)
+        elif filtro_fecha in ("Última semana", "Ultima semana", "Última Semana", "Ultima Semana"):
+            f_7d = (ahora - timedelta(days=7)).strftime("%Y-%m-%d 00:00:00")
+            query += " AND fecha_creacion >= ?"
+            params.append(f_7d)
+
+        query += " ORDER BY id DESC LIMIT ?;"
+        params.append(limite)
+
+        lotes = []
+        try:
+            with self._lock:
+                with self._conectar_sqlite() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(query, params)
+                    filas = cursor.fetchall()
+                    for f in filas:
+                        dur_seg = float(f["duracion_segundos"] or 0)
+                        dur_min = round(dur_seg / 60.0, 1)
+                        lotes.append({
+                            "id_lote": f["id_lote"],
+                            "fecha": str(f["fecha_creacion"])[:19],
+                            "modelo": f["modelo"],
+                            "total_granos": int(f["total_granos"]),
+                            "total_sanos": int(f["total_sanos"]),
+                            "porcentaje_calidad": round(float(f["porcentaje_calidad"]), 1),
+                            "tiempo_min": dur_min,
+                            "sync": bool(f["sync"]),
+                        })
+        except Exception as e:
+            logger.error(f"Error consultando historial de lotes: {e}")
+        return lotes
+
     def obtener_estadisticas_acumuladas(self) -> Dict[str, Any]:
         """Calcula métricas globales históricas para las StatCards."""
         stats = {
@@ -843,6 +909,7 @@ class GestorLotes:
         callback_lote_finalizado: Optional[Callable[[Dict[str, Any]], None]] = None,
         tenant_id: Optional[str] = None,
         maquina_id: Optional[str] = None,
+        **kwargs: Any,
     ) -> None:
         self.db_manager = db_manager
         self.tenant_id: str = tenant_id or (getattr(db_manager, "tenant_id", None) or TENANT_ID)
@@ -918,6 +985,10 @@ class GestorLotes:
             if hasattr(self.db_manager, "registrar_log_local"):
                 self.db_manager.registrar_log_local("INFO", f"Lote iniciado: {self.id_lote_actual} ({'13 Clases' if self.modelo_13_clases else 'Tri-clase'})")
             return self.id_lote_actual
+
+    def iniciar_lote(self) -> str:
+        """Alias de compatibilidad para iniciar_nuevo_lote."""
+        return self.iniciar_nuevo_lote()
 
     def registrar_detecciones(
         self,

@@ -1,25 +1,25 @@
 /**
  * @file main.cpp
- * @brief Firmware ESP32 Esclavo para Actuación Mecatrónica Neumática (MOPPI v1.5.0)
+ * @brief Firmware ESP32 Esclavo para Actuación Mecatrónica Neumática (MOPPI v1.7.0)
  * 
  * Gestiona:
- * 1. Control de 4 canales de electroválvulas mediante pulsos no bloqueantes con millis().
- * 2. Monitoreo continuo de presión en la galería del manifold mediante presostato digital.
- * 3. Protocolo de comunicación serial bidireccional delimitado por '\n' a 115200 baudios.
- *    - Comandos recibidos: "ACT:<canal>", "STOP", "PING"
- *    - Respuestas emitidas: "OK:<canal>", "OK:STOP", "PONG", "ERR:PRESSURE_FAULT_CH_<canal>"
+ * 1. Control de 4 canales de electroválvulas con extensión y rearmado de pulso continuo (millis()).
+ * 2. Control de tracción de banda transportadora (BANDA:ON, BANDA:OFF en GPIO 22).
+ * 3. Señalización óptica con luces piloto industriales (24V): ROJA (18), VERDE (17), BLANCA (16), AMARILLA (4).
+ * 4. Lectura analógica de transductores de presión en manifold (GPIOs 34, 35, 32, 33) y presostato digital (GPIO 19).
+ * 5. Protocolo serial bidireccional delimitado por '\n' a 115200 baudios.
  */
 
 #include <Arduino.h>
 
 // =====================================================================
-// 1. CONFIGURACIÓN DE PINES Y CONSTANTES
+// 1. CONFIGURACIÓN DE PINES Y CONSTANTES (MAPEO CONSOLIDADO)
 // =====================================================================
 
 static const uint8_t NUM_CANALES = 4;
 static const unsigned long TIEMPO_PULSO_DEFAULT_MS = 20;
 
-// Mapeo de pines GPIO a 3.3V para las 4 electroválvulas neumáticas
+// Mapeo de pines GPIO para las 4 electroválvulas neumáticas
 static const uint8_t PINES_VALVULAS[NUM_CANALES] = {
     25,  // Canal 0
     26,  // Canal 1
@@ -27,8 +27,25 @@ static const uint8_t PINES_VALVULAS[NUM_CANALES] = {
     14   // Canal 3
 };
 
+// Habilitación de tracción de banda transportadora
+static const uint8_t PIN_CONTROL_BANDA = 22;
+
+// Luces piloto de estado industrial (24V vía transistores / drivers)
+static const uint8_t PIN_LUZ_ROJA     = 18;
+static const uint8_t PIN_LUZ_VERDE    = 17;
+static const uint8_t PIN_LUZ_BLANCA   = 16;
+static const uint8_t PIN_LUZ_AMARILLA = 4;
+
+// Entradas analógicas de presión en galería/manifold (0..4095)
+static const uint8_t PINES_PRESION[NUM_CANALES] = {
+    34,  // Canal 0
+    35,  // Canal 1
+    32,  // Canal 2
+    33   // Canal 3
+};
+
 // Pin del presostato digital en la galería del manifold
-// Configurado con INPUT_PULLUP: LOW = Presión adecuada en galería, HIGH = Falla o descompresión
+// INPUT_PULLUP: LOW = Presión adecuada en galería, HIGH = Falla o descompresión
 static const uint8_t PIN_PRESOSTATO = 19;
 
 // =====================================================================
@@ -56,6 +73,7 @@ static size_t indiceBuffer = 0;
 void procesarComando(const char* comando);
 void desactivarTodosLosCanales();
 void dispararCanal(uint8_t canal);
+void conmutarPiloto(const char* color);
 void leerSerialNoBloqueante();
 void actualizarTemporizadores();
 
@@ -64,13 +82,12 @@ void actualizarTemporizadores();
 // =====================================================================
 
 void setup() {
-    // Inicializar puerto serial con velocidad estándar 115200
     Serial.begin(115200);
     while (!Serial && millis() < 1000) {
         // Breve espera para estabilización en arranque
     }
 
-    // Configurar pines de electroválvulas como salidas en estado inactivo (LOW)
+    // Configurar pines de electroválvulas como salidas en LOW
     for (uint8_t i = 0; i < NUM_CANALES; i++) {
         canales[i].pin = PINES_VALVULAS[i];
         canales[i].activo = false;
@@ -81,7 +98,29 @@ void setup() {
         digitalWrite(canales[i].pin, LOW);
     }
 
-    // Configurar presostato con pull-up interna
+    // Configurar tracción de banda transportadora
+    pinMode(PIN_CONTROL_BANDA, OUTPUT);
+    digitalWrite(PIN_CONTROL_BANDA, LOW);
+
+    // Configurar luces piloto de señalización (por defecto standby: BLANCO encendido)
+    pinMode(PIN_LUZ_ROJA, OUTPUT);
+    digitalWrite(PIN_LUZ_ROJA, LOW);
+
+    pinMode(PIN_LUZ_VERDE, OUTPUT);
+    digitalWrite(PIN_LUZ_VERDE, LOW);
+
+    pinMode(PIN_LUZ_BLANCA, OUTPUT);
+    digitalWrite(PIN_LUZ_BLANCA, HIGH);
+
+    pinMode(PIN_LUZ_AMARILLA, OUTPUT);
+    digitalWrite(PIN_LUZ_AMARILLA, LOW);
+
+    // Configurar entradas de presión analógica
+    for (uint8_t i = 0; i < NUM_CANALES; i++) {
+        pinMode(PINES_PRESION[i], INPUT);
+    }
+
+    // Configurar presostato digital con pull-up interna
     pinMode(PIN_PRESOSTATO, INPUT_PULLUP);
 
     Serial.println("MOPPI:ESP32_READY");
@@ -99,10 +138,6 @@ void loop() {
 // 5. IMPLEMENTACIÓN DE FUNCIONES
 // =====================================================================
 
-/**
- * Lee bytes del puerto serie sin detener la ejecución de loop().
- * Detecta saltos de línea ('\n' o '\r') para despachar el comando completo.
- */
 void leerSerialNoBloqueante() {
     while (Serial.available() > 0) {
         char c = (char)Serial.read();
@@ -117,18 +152,14 @@ void leerSerialNoBloqueante() {
             if (indiceBuffer < BUFFER_SERIAL_LEN - 1) {
                 bufferSerial[indiceBuffer++] = c;
             } else {
-                // Desbordamiento de buffer: resetear por seguridad
                 indiceBuffer = 0;
             }
         }
     }
 }
 
-/**
- * Procesa comandos delimitados según el protocolo de MOPPI.
- */
 void procesarComando(const char* comando) {
-    // Comando PING -> PONG (Validación de latencia y enlace activo)
+    // Comando PING -> PONG
     if (strcmp(comando, "PING") == 0) {
         Serial.println("PONG");
         return;
@@ -137,11 +168,30 @@ void procesarComando(const char* comando) {
     // Comando STOP -> Desactiva todas las válvulas inmediatamente
     if (strcmp(comando, "STOP") == 0) {
         desactivarTodosLosCanales();
+        digitalWrite(PIN_CONTROL_BANDA, LOW);
         Serial.println("OK:STOP");
         return;
     }
 
-    // Comando ACT:<canal> -> Activa el canal especificado
+    // Tracción de banda transportadora
+    if (strcmp(comando, "BANDA:ON") == 0) {
+        digitalWrite(PIN_CONTROL_BANDA, HIGH);
+        Serial.println("OK:BANDA:ON");
+        return;
+    }
+    if (strcmp(comando, "BANDA:OFF") == 0) {
+        digitalWrite(PIN_CONTROL_BANDA, LOW);
+        Serial.println("OK:BANDA:OFF");
+        return;
+    }
+
+    // Señalización de luces piloto: PILOT:<COLOR>
+    if (strncmp(comando, "PILOT:", 6) == 0) {
+        conmutarPiloto(comando + 6);
+        return;
+    }
+
+    // Comando ACT:<canal> -> Activa o reengancha el pulso del canal especificado
     if (strncmp(comando, "ACT:", 4) == 0) {
         int canal = atoi(comando + 4);
         if (canal >= 0 && canal < NUM_CANALES) {
@@ -158,22 +208,57 @@ void procesarComando(const char* comando) {
     Serial.println(comando);
 }
 
+void conmutarPiloto(const char* color) {
+    if (strcmp(color, "RED") == 0) {
+        digitalWrite(PIN_LUZ_ROJA, HIGH);
+        digitalWrite(PIN_LUZ_VERDE, LOW);
+        digitalWrite(PIN_LUZ_BLANCA, LOW);
+        digitalWrite(PIN_LUZ_AMARILLA, LOW);
+        Serial.println("OK:PILOT:RED");
+    } else if (strcmp(color, "GREEN") == 0) {
+        digitalWrite(PIN_LUZ_ROJA, LOW);
+        digitalWrite(PIN_LUZ_VERDE, HIGH);
+        digitalWrite(PIN_LUZ_BLANCA, LOW);
+        digitalWrite(PIN_LUZ_AMARILLA, LOW);
+        Serial.println("OK:PILOT:GREEN");
+    } else if (strcmp(color, "WHITE") == 0) {
+        digitalWrite(PIN_LUZ_ROJA, LOW);
+        digitalWrite(PIN_LUZ_VERDE, LOW);
+        digitalWrite(PIN_LUZ_BLANCA, HIGH);
+        digitalWrite(PIN_LUZ_AMARILLA, LOW);
+        Serial.println("OK:PILOT:WHITE");
+    } else if (strcmp(color, "YELLOW") == 0) {
+        digitalWrite(PIN_LUZ_ROJA, LOW);
+        digitalWrite(PIN_LUZ_VERDE, LOW);
+        digitalWrite(PIN_LUZ_BLANCA, LOW);
+        digitalWrite(PIN_LUZ_AMARILLA, HIGH);
+        Serial.println("OK:PILOT:YELLOW");
+    } else {
+        Serial.print("ERR:UNKNOWN_PILOT_COLOR_");
+        Serial.println(color);
+    }
+}
+
 /**
- * Activa la electroválvula del canal correspondiente de forma no bloqueante
- * y programa la verificación de la galería con el presostato.
+ * Extensión y Rearmado de Pulso Continuo:
+ * Si el canal ya se encuentra activo (canales[canal].activo == true), refresca
+ * tiempoActivacion = millis() sin apagar el pin físico, logrando una descarga
+ * de aire ininterrumpida ante defectos sucesivos cercanos.
  */
 void dispararCanal(uint8_t canal) {
+    if (canales[canal].activo) {
+        canales[canal].tiempoActivacion = millis();
+        return;
+    }
+
     canales[canal].activo = true;
     canales[canal].tiempoActivacion = millis();
     canales[canal].pendienteVerificacionPresion = true;
 
-    // Encender electroválvula
+    // Encender electroválvula física
     digitalWrite(canales[canal].pin, HIGH);
 }
 
-/**
- * Desactiva inmediatamente todos los canales de electroválvulas.
- */
 void desactivarTodosLosCanales() {
     for (uint8_t i = 0; i < NUM_CANALES; i++) {
         digitalWrite(canales[i].pin, LOW);
@@ -182,33 +267,20 @@ void desactivarTodosLosCanales() {
     }
 }
 
-/**
- * Supervisa el tiempo de activación de cada electroválvula y apaga
- * el pin automáticamente tras TIEMPO_PULSO_DEFAULT_MS.
- * Verifica además la respuesta de presión del presostato digital.
- */
 void actualizarTemporizadores() {
     unsigned long ahora = millis();
 
     for (uint8_t i = 0; i < NUM_CANALES; i++) {
         if (canales[i].activo) {
-            // Verificar si transcurrió la duración del pulso
             if (ahora - canales[i].tiempoActivacion >= TIEMPO_PULSO_DEFAULT_MS) {
-                // Apagar electroválvula
+                // Apagar electroválvula tras expirar tiempo acumulado del pulso
                 digitalWrite(canales[i].pin, LOW);
                 canales[i].activo = false;
 
-                // Comprobación de presostato al concluir el pulso de eyección
                 if (canales[i].pendienteVerificacionPresion) {
                     canales[i].pendienteVerificacionPresion = false;
-
-                    // Lectura del presostato:
-                    // Si el pin está en HIGH (circuito abierto por falta de presión de línea
-                    // o falla de presurización en la galería del manifold):
                     int estadoPresostato = digitalRead(PIN_PRESOSTATO);
 
-                    // Nota: En condiciones normales de operación con aire presurizado,
-                    // el presostato cerrado a masa da LOW. Si está en HIGH o no hay presión:
                     if (estadoPresostato == HIGH) {
                         Serial.print("ERR:PRESSURE_FAULT_CH_");
                         Serial.println(i);

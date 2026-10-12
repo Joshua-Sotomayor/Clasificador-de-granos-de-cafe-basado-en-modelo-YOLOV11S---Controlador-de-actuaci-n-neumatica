@@ -30,6 +30,32 @@ NUM_CARRILES_ACTUACION: int = 4  # 4 carriles virtuales para la neumática
 ANCHO_CARRIL_PX: int = 160       # canal = int(x_center // 160)
 LINEA_DISPARO_Y: int = 500       # Y = 500 coordenada de activación para válvulas ESP32
 
+BELT_SPEED_M_S_DEFAULT: float = float(os.getenv("BELT_SPEED_M_S", "1.5"))
+PIXELS_PER_METER_Y_DEFAULT: float = float(os.getenv("PIXELS_PER_METER_Y", "6400"))
+Y_NOZZLE_PX_DEFAULT: int = int(os.getenv("Y_NOZZLE_PX", "530"))
+VALVE_RESPONSE_TIME_MS_DEFAULT: float = float(os.getenv("VALVE_RESPONSE_TIME_MS", "3.0"))
+RUTA_CONFIG_MAQUINA_DEFAULT: str = os.path.join(os.path.dirname(__file__), "..", "storage", "config_maquina.json")
+
+
+def calcular_desplazamiento_cinematico(
+    valvula_latencia_ms: float,
+    serial_latencia_ms: float = 0.0,
+    inferencia_latencia_ms: float = 0.0,
+    belt_speed_m_s: float = BELT_SPEED_M_S_DEFAULT,
+    pixels_per_meter_y: float = PIXELS_PER_METER_Y_DEFAULT,
+    y_nozzle_px: int = Y_NOZZLE_PX_DEFAULT,
+) -> Tuple[float, int]:
+    """
+    Cálculo de Desplazamiento Predictivo y Coordenada de Disparo:
+    t_total_s = (t_valvula_ms + t_serial_ms + t_inferencia_ms) / 1000
+    delta_y_offset = v_banda * t_total_s * PPM_y
+    y_trigger = y_nozzle - delta_y_offset
+    """
+    t_total_s = (float(valvula_latencia_ms) + float(serial_latencia_ms) + float(inferencia_latencia_ms)) / 1000.0
+    delta_y_offset = belt_speed_m_s * t_total_s * pixels_per_meter_y
+    y_trigger = int(round(y_nozzle_px - delta_y_offset))
+    return delta_y_offset, y_trigger
+
 CAMERA_MATCHING_X_TOLERANCE_PX_DEFAULT: int = int(os.getenv("CAMERA_MATCHING_X_TOLERANCE_PX", "25"))
 CAMERA_SOURCE_TOP_DEFAULT: Union[int, str] = os.getenv("CAMERA_SOURCE_TOP", "0")
 CAMERA_SOURCE_BOTTOM_DEFAULT: Union[int, str] = os.getenv("CAMERA_SOURCE_BOTTOM", "1")
@@ -373,6 +399,19 @@ class YOLODetector:
         # Seguidor espacial anti-duplicidad
         self.seguidor_granos = SeguidorGranos()
 
+        # Cinemática de banda transportadora y actuación predictiva
+        self.ruta_config_maquina = os.path.abspath(RUTA_CONFIG_MAQUINA_DEFAULT)
+        self.belt_speed_m_s = BELT_SPEED_M_S_DEFAULT
+        self.pixels_per_meter_y = PIXELS_PER_METER_Y_DEFAULT
+        self.y_nozzle_px = Y_NOZZLE_PX_DEFAULT
+        self.valvula_latencia_ms = VALVE_RESPONSE_TIME_MS_DEFAULT
+        self.posicion_camara_invertida = False
+        self.y_trigger_preview: Optional[int] = None
+        self._camera_lock = threading.RLock()
+
+        # Cargar configuración persistida o calcular por defecto
+        self._cargar_config_maquina(linea_disparo_param=linea_disparo_y)
+
         # Estado del detector
         self._ejecutando = False
         self._pausado = False
@@ -410,6 +449,131 @@ class YOLODetector:
     def ejecutando(self) -> bool:
         """Indica si el bucle de procesamiento del detector se encuentra activo."""
         return self._ejecutando
+
+    def _cargar_config_maquina(self, linea_disparo_param: Optional[int] = None) -> None:
+        """Carga parámetros cinemáticos persistidos en storage/config_maquina.json."""
+        cargado = False
+        if os.path.exists(self.ruta_config_maquina):
+            try:
+                import json
+                with open(self.ruta_config_maquina, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.valvula_latencia_ms = float(data.get("valvula_latencia_ms", self.valvula_latencia_ms))
+                self.posicion_camara_invertida = bool(data.get("posicion_camara_invertida", False))
+                _, y_calc = calcular_desplazamiento_cinematico(
+                    self.valvula_latencia_ms,
+                    belt_speed_m_s=self.belt_speed_m_s,
+                    pixels_per_meter_y=self.pixels_per_meter_y,
+                    y_nozzle_px=self.y_nozzle_px,
+                )
+                self.y_trigger = int(data.get("y_trigger_px", y_calc))
+                self.linea_disparo_y = self.y_trigger
+                cargado = True
+            except Exception as e:
+                print(f"[YOLODetector] Error leyendo config_maquina.json: {e}")
+
+        if not cargado:
+            if linea_disparo_param is not None and linea_disparo_param != LINEA_DISPARO_Y:
+                self.y_trigger = linea_disparo_param
+                self.linea_disparo_y = linea_disparo_param
+            else:
+                _, y_calc = calcular_desplazamiento_cinematico(
+                    self.valvula_latencia_ms,
+                    belt_speed_m_s=self.belt_speed_m_s,
+                    pixels_per_meter_y=self.pixels_per_meter_y,
+                    y_nozzle_px=self.y_nozzle_px,
+                )
+                self.y_trigger = y_calc
+                self.linea_disparo_y = y_calc
+
+    def guardar_config_maquina(self) -> None:
+        """Persiste atómicamente la configuración en storage/config_maquina.json."""
+        import json
+        from datetime import datetime
+        directorio = os.path.dirname(self.ruta_config_maquina)
+        if directorio and not os.path.exists(directorio):
+            os.makedirs(directorio, exist_ok=True)
+
+        payload = {
+            "valvula_latencia_ms": round(float(self.valvula_latencia_ms), 2),
+            "y_trigger_px": int(self.y_trigger),
+            "posicion_camara_invertida": bool(self.posicion_camara_invertida),
+            "ultima_actualizacion": datetime.now().isoformat(timespec="seconds"),
+        }
+        ruta_tmp = f"{self.ruta_config_maquina}.tmp"
+        try:
+            with open(ruta_tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(ruta_tmp, self.ruta_config_maquina)
+        except Exception as e:
+            if os.path.exists(ruta_tmp):
+                try:
+                    os.remove(ruta_tmp)
+                except Exception:
+                    pass
+            print(f"[YOLODetector] Error guardando config_maquina.json: {e}")
+
+    def actualizar_latencia_actuador(
+        self,
+        nueva_latencia_ms: float,
+        serial_latencia_ms: float = 0.0,
+        inferencia_latencia_ms: float = 0.0,
+    ) -> int:
+        """
+        Calcula el nuevo Y_trigger dinámicamente y lo persiste en storage/config_maquina.json.
+        Actualiza self.y_trigger y self.linea_disparo_y en caliente.
+        """
+        with self._lock:
+            self.valvula_latencia_ms = float(nueva_latencia_ms)
+            _, y_trig = calcular_desplazamiento_cinematico(
+                self.valvula_latencia_ms,
+                serial_latencia_ms=serial_latencia_ms,
+                inferencia_latencia_ms=inferencia_latencia_ms,
+                belt_speed_m_s=self.belt_speed_m_s,
+                pixels_per_meter_y=self.pixels_per_meter_y,
+                y_nozzle_px=self.y_nozzle_px,
+            )
+            self.y_trigger = y_trig
+            self.linea_disparo_y = y_trig
+            self.y_trigger_preview = None
+            self.guardar_config_maquina()
+            return self.y_trigger
+
+    def previsualizar_latencia_actuador(
+        self,
+        latencia_ms: float,
+        serial_latencia_ms: float = 0.0,
+        inferencia_latencia_ms: float = 0.0,
+    ) -> int:
+        """Calcula una coordenada virtual Y_trigger para previsualización discontinua en video."""
+        with self._lock:
+            _, y_prev = calcular_desplazamiento_cinematico(
+                latencia_ms,
+                serial_latencia_ms=serial_latencia_ms,
+                inferencia_latencia_ms=inferencia_latencia_ms,
+                belt_speed_m_s=self.belt_speed_m_s,
+                pixels_per_meter_y=self.pixels_per_meter_y,
+                y_nozzle_px=self.y_nozzle_px,
+            )
+            self.y_trigger_preview = y_prev
+            return self.y_trigger_preview
+
+    def cancelar_previsualizacion_latencia(self) -> None:
+        """Descarta la previsualización y mantiene la línea operativa real."""
+        with self._lock:
+            self.y_trigger_preview = None
+
+    def alternar_posicion_camaras(self) -> Tuple[Union[int, str], Union[int, str]]:
+        """Invierte la asignación física de las cámaras (Top <-> Bottom) y persiste."""
+        with self._lock:
+            self.posicion_camara_invertida = not self.posicion_camara_invertida
+            nueva_top = self.fuente_video_bottom
+            nueva_bot = self.fuente_video_top
+            self.cambiar_fuentes_video(nueva_top, nueva_bot)
+            self.guardar_config_maquina()
+            return self.fuente_video_top, self.fuente_video_bottom
 
     def _inicializar_modelo(self) -> None:
         """
@@ -557,65 +721,66 @@ class YOLODetector:
 
     def _abrir_camaras(self) -> bool:
         """Abre ambas cámaras web con backend DirectShow en Windows para latencia mínima."""
-        # 1. Cámara Superior (Maestro)
-        if str(self.fuente_video_top).lower() in ("demo", "simulado", "synthetic"):
-            print("[YOLODetector] Cámara Superior (Maestro) en modo simulación (demo).")
-            self._cap_top = None
-        else:
-            try:
-                src_top = int(self.fuente_video_top) if str(self.fuente_video_top).isdigit() else self.fuente_video_top
-                if isinstance(src_top, int):
-                    self._cap_top = cv2.VideoCapture(src_top, cv2.CAP_DSHOW)
-                    if not self._cap_top or not self._cap_top.isOpened():
+        with self._camera_lock:
+            # 1. Cámara Superior (Maestro)
+            if str(self.fuente_video_top).lower() in ("demo", "simulado", "synthetic"):
+                print("[YOLODetector] Cámara Superior (Maestro) en modo simulación (demo).")
+                self._cap_top = None
+            else:
+                try:
+                    src_top = int(self.fuente_video_top) if str(self.fuente_video_top).isdigit() else self.fuente_video_top
+                    if isinstance(src_top, int):
+                        self._cap_top = cv2.VideoCapture(src_top, cv2.CAP_DSHOW)
+                        if not self._cap_top or not self._cap_top.isOpened():
+                            self._cap_top = cv2.VideoCapture(src_top)
+                    else:
                         self._cap_top = cv2.VideoCapture(src_top)
-                else:
-                    self._cap_top = cv2.VideoCapture(src_top)
 
-                if not self._cap_top or not self._cap_top.isOpened():
-                    print(f"[YOLODetector] Cámara superior {self.fuente_video_top} no disponible. Usando generador demo.")
+                    if not self._cap_top or not self._cap_top.isOpened():
+                        print(f"[YOLODetector] Cámara superior {self.fuente_video_top} no disponible. Usando generador demo.")
+                        self.fuente_video_top = "demo"
+                        self._cap_top = None
+                    else:
+                        self._cap_top.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolucion_captura[0])
+                        self._cap_top.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolucion_captura[1])
+                        self._cap_top.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                        print(f"[YOLODetector] Cámara superior (Maestro) {src_top} abierta exitosamente.")
+                except Exception as e:
+                    print(f"[YOLODetector] Error al abrir cámara superior ({e}). Usando modo demo.")
                     self.fuente_video_top = "demo"
                     self._cap_top = None
-                else:
-                    self._cap_top.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolucion_captura[0])
-                    self._cap_top.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolucion_captura[1])
-                    self._cap_top.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    print(f"[YOLODetector] Cámara superior (Maestro) {src_top} abierta exitosamente.")
-            except Exception as e:
-                print(f"[YOLODetector] Error al abrir cámara superior ({e}). Usando modo demo.")
-                self.fuente_video_top = "demo"
-                self._cap_top = None
 
-        # 2. Cámara Inferior (Esclavo)
-        if str(self.fuente_video_bottom).lower() in ("demo", "simulado", "synthetic"):
-            print("[YOLODetector] Cámara Inferior (Esclavo) en modo simulación (demo).")
-            self._cap_bottom = None
-        else:
-            try:
-                src_bot = int(self.fuente_video_bottom) if str(self.fuente_video_bottom).isdigit() else self.fuente_video_bottom
-                if isinstance(src_bot, int):
-                    self._cap_bottom = cv2.VideoCapture(src_bot, cv2.CAP_DSHOW)
-                    if not self._cap_bottom or not self._cap_bottom.isOpened():
+            # 2. Cámara Inferior (Esclavo)
+            if str(self.fuente_video_bottom).lower() in ("demo", "simulado", "synthetic"):
+                print("[YOLODetector] Cámara Inferior (Esclavo) en modo simulación (demo).")
+                self._cap_bottom = None
+            else:
+                try:
+                    src_bot = int(self.fuente_video_bottom) if str(self.fuente_video_bottom).isdigit() else self.fuente_video_bottom
+                    if isinstance(src_bot, int):
+                        self._cap_bottom = cv2.VideoCapture(src_bot, cv2.CAP_DSHOW)
+                        if not self._cap_bottom or not self._cap_bottom.isOpened():
+                            self._cap_bottom = cv2.VideoCapture(src_bot)
+                    else:
                         self._cap_bottom = cv2.VideoCapture(src_bot)
-                else:
-                    self._cap_bottom = cv2.VideoCapture(src_bot)
 
-                if not self._cap_bottom or not self._cap_bottom.isOpened():
-                    print(f"[YOLODetector] Cámara inferior {self.fuente_video_bottom} no disponible. Usando generador demo.")
+                    if not self._cap_bottom or not self._cap_bottom.isOpened():
+                        print(f"[YOLODetector] Cámara inferior {self.fuente_video_bottom} no disponible. Usando generador demo.")
+                        self.fuente_video_bottom = "demo"
+                        self._cap_bottom = None
+                    else:
+                        self._cap_bottom.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolucion_captura[0])
+                        self._cap_bottom.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolucion_captura[1])
+                        self._cap_bottom.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                        print(f"[YOLODetector] Cámara inferior (Esclavo) {src_bot} abierta exitosamente.")
+                except Exception as e:
+                    print(f"[YOLODetector] Error al abrir cámara inferior ({e}). Usando modo demo.")
                     self.fuente_video_bottom = "demo"
                     self._cap_bottom = None
-                else:
-                    self._cap_bottom.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolucion_captura[0])
-                    self._cap_bottom.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolucion_captura[1])
-                    self._cap_bottom.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    print(f"[YOLODetector] Cámara inferior (Esclavo) {src_bot} abierta exitosamente.")
-            except Exception as e:
-                print(f"[YOLODetector] Error al abrir cámara inferior ({e}). Usando modo demo.")
-                self.fuente_video_bottom = "demo"
-                self._cap_bottom = None
 
-        self._cap = self._cap_top
-        self.es_dual_sincronizado = True
-        return True
+            self._cap = self._cap_top
+            self.es_dual_sincronizado = True
+            return True
 
     def _abrir_camara(self) -> bool:
         """Alias de compatibilidad."""
@@ -623,52 +788,54 @@ class YOLODetector:
 
     def _liberar_camara(self) -> None:
         """Libera los recursos de hardware de ambas cámaras con seguridad."""
-        if self._cap_top is not None:
-            try:
-                self._cap_top.release()
-            except Exception:
-                pass
-            self._cap_top = None
+        with self._camera_lock:
+            if self._cap_top is not None:
+                try:
+                    self._cap_top.release()
+                except Exception:
+                    pass
+                self._cap_top = None
 
-        if self._cap_bottom is not None:
-            try:
-                self._cap_bottom.release()
-            except Exception:
-                pass
-            self._cap_bottom = None
+            if self._cap_bottom is not None:
+                try:
+                    self._cap_bottom.release()
+                except Exception:
+                    pass
+                self._cap_bottom = None
 
-        self._cap = None
+            self._cap = None
 
     def _leer_frames_dual(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """Adquiere simultáneamente los fotogramas de la cámara superior e inferior."""
         frame_top = None
         frame_bottom = None
 
-        # 1. Lectura Superior (Maestro)
-        if str(self.fuente_video_top).lower() in ("demo", "simulado", "synthetic") or self._cap_top is None:
-            frame_top = self._generar_frame_sintetico()
-        else:
-            try:
-                ret, f_top = self._cap_top.read()
-                if ret and f_top is not None:
-                    frame_top = f_top
-                else:
-                    frame_top = self._generar_frame_sintetico()
-            except Exception:
+        with self._camera_lock:
+            # 1. Lectura Superior (Maestro)
+            if str(self.fuente_video_top).lower() in ("demo", "simulado", "synthetic") or self._cap_top is None:
                 frame_top = self._generar_frame_sintetico()
+            else:
+                try:
+                    ret, f_top = self._cap_top.read()
+                    if ret and f_top is not None:
+                        frame_top = f_top
+                    else:
+                        frame_top = self._generar_frame_sintetico()
+                except Exception:
+                    frame_top = self._generar_frame_sintetico()
 
-        # 2. Lectura Inferior (Esclavo)
-        if str(self.fuente_video_bottom).lower() in ("demo", "simulado", "synthetic") or self._cap_bottom is None:
-            frame_bottom = self._generar_frame_sintetico_inferior()
-        else:
-            try:
-                ret, f_bot = self._cap_bottom.read()
-                if ret and f_bot is not None:
-                    frame_bottom = f_bot
-                else:
-                    frame_bottom = self._generar_frame_sintetico_inferior()
-            except Exception:
+            # 2. Lectura Inferior (Esclavo)
+            if str(self.fuente_video_bottom).lower() in ("demo", "simulado", "synthetic") or self._cap_bottom is None:
                 frame_bottom = self._generar_frame_sintetico_inferior()
+            else:
+                try:
+                    ret, f_bot = self._cap_bottom.read()
+                    if ret and f_bot is not None:
+                        frame_bottom = f_bot
+                    else:
+                        frame_bottom = self._generar_frame_sintetico_inferior()
+                except Exception:
+                    frame_bottom = self._generar_frame_sintetico_inferior()
 
         return frame_top, frame_bottom
 
@@ -992,7 +1159,7 @@ class YOLODetector:
                     cv2.LINE_AA,
                 )
 
-        # 2. Línea de disparo horizontal roja en Y = 500
+        # 2. Línea de disparo horizontal roja en Y = linea_disparo_y
         y_disparo = min(self.linea_disparo_y, h - 5)
         cv2.line(frame, (0, y_disparo), (w, y_disparo), (0, 0, 255), 2, cv2.LINE_AA)
         cv2.putText(
@@ -1005,6 +1172,24 @@ class YOLODetector:
             1,
             cv2.LINE_AA,
         )
+
+        # 3. Previsualización discontinua (dashed line) si el slider está en ajuste
+        if self.y_trigger_preview is not None:
+            y_prev = min(max(5, self.y_trigger_preview), h - 5)
+            paso = 16
+            for x in range(0, w, paso):
+                if (x // paso) % 2 == 0:
+                    cv2.line(frame, (x, y_prev), (min(x + paso // 2, w), y_prev), (0, 215, 255), 2, cv2.LINE_AA)
+            cv2.putText(
+                frame,
+                f"PREV TRIGGER (Y={y_prev})",
+                (w - 230, max(18, y_prev - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.38,
+                (0, 215, 255),
+                1,
+                cv2.LINE_AA,
+            )
 
     def _dibujar_guias_canales_inferior(self, frame: np.ndarray) -> None:
         """

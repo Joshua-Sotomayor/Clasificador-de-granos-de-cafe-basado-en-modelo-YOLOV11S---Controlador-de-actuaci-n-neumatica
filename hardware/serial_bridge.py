@@ -78,6 +78,8 @@ class ESP32Bridge:
         self._total_fallas_presion: int = 0
         self._ultimo_ping_ts: float = 0.0
         self._latencia_ping_ms: float = 0.0
+        self._banda_activa: bool = False
+        self._piloto_actual: str = "WHITE"
         self._lock_stats = threading.Lock()
 
         # Iniciar conexión
@@ -153,6 +155,39 @@ class ESP32Bridge:
         except queue.Full:
             return False
 
+    def control_banda(self, activa: bool) -> bool:
+        """Encola el comando para encender (BANDA:ON) o apagar (BANDA:OFF) la tracción."""
+        self._banda_activa = bool(activa)
+        trama = "BANDA:ON" if activa else "BANDA:OFF"
+        try:
+            self._cola_envio.put_nowait(trama)
+            return True
+        except queue.Full:
+            logger.error(f"[ESP32Bridge] Cola llena al enviar {trama}")
+            return False
+
+    def cambiar_piloto(self, color: str) -> bool:
+        """
+        Encola el comando PILOT:<COLOR> (RED, GREEN, WHITE, YELLOW)
+        para conmutar las luces piloto de estado industrial (24V).
+        """
+        color_norm = str(color).upper().strip()
+        mapa_colores = {
+            "ROJO": "RED", "RED": "RED",
+            "VERDE": "GREEN", "GREEN": "GREEN",
+            "BLANCO": "WHITE", "WHITE": "WHITE",
+            "AMARILLO": "YELLOW", "YELLOW": "YELLOW",
+        }
+        color_final = mapa_colores.get(color_norm, color_norm)
+        self._piloto_actual = color_final
+        trama = f"PILOT:{color_final}"
+        try:
+            self._cola_envio.put_nowait(trama)
+            return True
+        except queue.Full:
+            logger.error(f"[ESP32Bridge] Cola llena al enviar {trama}")
+            return False
+
     def hacer_ping(self) -> bool:
         """Encola un comando PING para verificar la presencia y latencia del ESP32."""
         self._ultimo_ping_ts = time.time()
@@ -203,6 +238,10 @@ class ESP32Bridge:
             self._serial_conn = None
 
         logger.info("[ESP32Bridge] Puente serial cerrado correctamente.")
+
+    def desconectar(self) -> None:
+        """Alias para cerrar()."""
+        self.cerrar()
 
     # =========================================================================
     # HILOS TRABAJADORES (EMISOR Y RECEPTOR)
@@ -264,6 +303,12 @@ class ESP32Bridge:
             self._procesar_linea_recibida("PONG")
         elif comando == "STOP":
             self._procesar_linea_recibida("OK:STOP")
+        elif comando == "BANDA:ON":
+            self._procesar_linea_recibida("OK:BANDA:ON")
+        elif comando == "BANDA:OFF":
+            self._procesar_linea_recibida("OK:BANDA:OFF")
+        elif comando.startswith("PILOT:"):
+            self._procesar_linea_recibida(f"OK:{comando}")
         elif comando.startswith("ACT:"):
             canal = comando[4:]
             self._procesar_linea_recibida(f"OK:{canal}")
