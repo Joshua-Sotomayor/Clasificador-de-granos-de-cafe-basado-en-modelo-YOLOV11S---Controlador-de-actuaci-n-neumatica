@@ -908,20 +908,20 @@ class DashboardCustomTkinter(ctk.CTk):
             text="Frecuencia / Categoría",
             font=("Arial", 24, "bold"),
             text_color=GRIS_TEXTO,
-        ).place(relx=0.5, rely=0.045, anchor="center")
+        ).place(relx=0.5, rely=0.038, anchor="center")
 
         # Figura y lienzo reactivo de Matplotlib incrustado en tema claro aprovechando todo el contenedor
-        self.fig_analiticas = Figure(figsize=(6.14, 5.30), dpi=100, facecolor=GRIS_PANEL)
+        self.fig_analiticas = Figure(figsize=(5.80, 5.10), dpi=100, facecolor=GRIS_PANEL)
         self.ax_analiticas = self.fig_analiticas.add_subplot(111)
         self.ax_analiticas.set_facecolor("#FFFFFF")
-        self.fig_analiticas.subplots_adjust(left=0.18, right=0.96, top=0.96, bottom=0.10)
+        self.fig_analiticas.subplots_adjust(left=0.14, right=0.98, top=0.97, bottom=0.08)
 
         self.canvas_analiticas = FigureCanvasTkAgg(
             self.fig_analiticas, master=self.frame_grafico_analiticas
         )
         self.widget_canvas_analiticas = self.canvas_analiticas.get_tk_widget()
         self.widget_canvas_analiticas.configure(bg=GRIS_PANEL, highlightthickness=0)
-        self.widget_canvas_analiticas.place(relx=0.5, rely=0.53, anchor="center", width=614, height=530)
+        self.widget_canvas_analiticas.place(relx=0.5, rely=0.53, anchor="center", width=580, height=510)
 
     def _crear_panel_estadisticas(self) -> None:
         panel_estats = ctk.CTkFrame(
@@ -1820,14 +1820,32 @@ class DashboardCustomTkinter(ctk.CTk):
             else:
                 colores_barras.append(ROJO_PARO)
 
-        self.ax_analiticas.barh(posiciones, valores, color=colores_barras, height=0.6, align="center")
+        altura_barra = 0.55 if len(orden) <= 3 else 0.6
+        self.ax_analiticas.barh(posiciones, valores, color=colores_barras, height=altura_barra, align="center")
         self.ax_analiticas.set_yticks(posiciones)
         self.ax_analiticas.set_yticklabels(orden, color=GRIS_TEXTO, fontsize=12, fontweight="bold")
         self.ax_analiticas.tick_params(axis="x", colors=GRIS_TEXTO, labelsize=11)
         self.ax_analiticas.tick_params(axis="y", colors=GRIS_TEXTO)
 
-        # Forzar estrictamente números enteros en el eje horizontal (unidades)
-        self.ax_analiticas.xaxis.set_major_locator(MaxNLocator(integer=True))
+        # Límite horizontal y enteros estrictos (sin números negativos ni decimales)
+        max_val = max(valores) if valores else 0
+        lim_derecho = max(5, int(np.ceil(max_val * 1.15)) if max_val > 0 else 5)
+        self.ax_analiticas.set_xlim(left=0, right=lim_derecho)
+        self.ax_analiticas.xaxis.set_major_locator(MaxNLocator(integer=True, min_n_ticks=3, nbins=6))
+
+        # Renderizar etiquetas numéricas al costado de las barras cuando val > 0
+        for i, val in enumerate(valores):
+            if val > 0:
+                self.ax_analiticas.text(
+                    val + (lim_derecho * 0.015),
+                    i,
+                    str(val),
+                    va="center",
+                    ha="left",
+                    fontsize=11,
+                    fontweight="bold",
+                    color=GRIS_TEXTO,
+                )
 
         # Rejilla sutil horizontal y espinas en gris borde
         self.ax_analiticas.grid(axis="x", color="#E9ECE8", linestyle="--", alpha=0.9)
@@ -1836,7 +1854,7 @@ class DashboardCustomTkinter(ctk.CTk):
             spine.set_linewidth(1.0)
 
         self.ax_analiticas.invert_yaxis()
-        self.fig_analiticas.subplots_adjust(left=0.18, right=0.96, top=0.96, bottom=0.10)
+        self.fig_analiticas.subplots_adjust(left=0.14, right=0.96, top=0.97, bottom=0.08)
         self.canvas_analiticas.draw()
 
     # =========================================================================

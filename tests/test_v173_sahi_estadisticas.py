@@ -189,6 +189,50 @@ class TestV173SahiEstadisticas(unittest.TestCase):
         self.assertEqual(ACRONIMOS_TRI["Robusta_Bueno"], "R_BUE")
         self.assertEqual(ACRONIMOS_TRI["Grano_Defecto"], "G_DEF")
 
+    def test_grafico_analiticas_eje_x_sin_negativos_ni_decimales(self):
+        """Valida que la gráfica de analíticas nunca muestre valores negativos ni decimales en el eje X."""
+        from ui.dashboard_ctk import DashboardCustomTkinter
+        app = None
+        try:
+            metricas = GestorMetricas()
+            app = DashboardCustomTkinter(
+                detector=self.detector,
+                metricas=metricas,
+                db_manager=self.db,
+                gestor_lotes=self.gestor_lotes,
+                auto_iniciar_camara=False,
+            )
+            app.withdraw()
+
+            # Caso 1: Lote inicial con contadores en cero
+            app._actualizar_grafico_reactivo()
+            xlim = app.ax_analiticas.get_xlim()
+            self.assertEqual(xlim[0], 0.0, "El eje horizontal debe iniciar estrictamente en 0")
+            self.assertGreaterEqual(xlim[1], 5.0, "El límite derecho inicial debe ser al menos 5 para evitar divisiones decimales")
+
+            ticks = [t for t in app.ax_analiticas.get_xticks() if xlim[0] <= t <= xlim[1]]
+            for t in ticks:
+                self.assertGreaterEqual(t, 0.0, f"Ningún tick puede ser negativo: {t}")
+                self.assertEqual(t, round(t), f"Los ticks deben ser números enteros exactos: {t}")
+
+            # Caso 2: Simulación de granos detectados
+            self.gestor_lotes.conteo_crudo = {"Arabica_Bueno": 8, "Robusta_Bueno": 4, "Grano_Defecto": 2}
+            app._actualizar_grafico_reactivo()
+            xlim_nuevo = app.ax_analiticas.get_xlim()
+            self.assertEqual(xlim_nuevo[0], 0.0)
+            self.assertGreaterEqual(xlim_nuevo[1], 8.0)
+
+            ticks_nuevos = [t for t in app.ax_analiticas.get_xticks() if xlim_nuevo[0] <= t <= xlim_nuevo[1]]
+            for t in ticks_nuevos:
+                self.assertGreaterEqual(t, 0.0)
+                self.assertEqual(t, round(t))
+        finally:
+            if app is not None:
+                try:
+                    app.destroy()
+                except Exception:
+                    pass
+
 
 if __name__ == "__main__":
     unittest.main()
