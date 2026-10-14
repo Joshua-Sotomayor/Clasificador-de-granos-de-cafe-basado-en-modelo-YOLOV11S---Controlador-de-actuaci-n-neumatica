@@ -83,21 +83,23 @@ class InterfazApp(ctk.CTk):
         # el panel inferior (padx=(10, 20)) -> extremos alineados.
         # ----------------------------------------------
         self.pestañas = ctk.CTkSegmentedButton(
-            self, 
-            values=["Dashboard", "Analíticas", "Registros"], 
-            fg_color=GRIS_SUAVE, 
+            self,
+            values=["Dashboard", "Analíticas", "Registros"],
+            fg_color=GRIS_SUAVE,
             unselected_color=GRIS_SUAVE,
             unselected_hover_color=GRIS_SUAVE_HOV,
-            selected_color=VERDE, 
+            selected_color=VERDE,
             selected_hover_color=VERDE_HOVER,
             text_color=GRIS_TEXTO,
             text_color_disabled=GRIS_MEDIO,
-            height=80, 
-            font=("Arial", 24), 
+            height=80,
+            width=580,   # Ancho fijo: el selector mide lo mismo en las 3 vistas
+            font=("Arial", 24),
             corner_radius=40
         )
         self.pestañas.set("Dashboard")
-        self.pestañas.grid(row=0, column=1, sticky="new", padx=(10, 20), pady=15)
+        # Anclado al noreste: el borde derecho siempre queda en el margen de 20 px
+        self.pestañas.grid(row=0, column=1, sticky="ne", padx=(10, 20), pady=15)
 
         # Configuración compartida de los controles verdes de la barra
         self.config_btn_superior = {
@@ -629,7 +631,7 @@ class InterfazApp(ctk.CTk):
             values=["Todos", "Arábica", "Robusta", "Defectos"],  # placeholder
             width=140, height=70,
             font=("Arial", 24), dropdown_font=("Arial", 24),
-            fg_color=VERDE, button_color=VERDE_HOVER, button_hover_color=VERDE_CLARO,
+            fg_color=VERDE, button_color=VERDE, button_hover_color=VERDE_CLARO,
             text_color="white",
             corner_radius=35
         )
@@ -649,7 +651,6 @@ class InterfazApp(ctk.CTk):
             height=70, font=("Arial", 24),
             corner_radius=35
         )
-        filtros_rapidos.set("Todos")
         filtros_rapidos.pack(side="left")
 
         # Título de sección a la derecha: 36 pt bold
