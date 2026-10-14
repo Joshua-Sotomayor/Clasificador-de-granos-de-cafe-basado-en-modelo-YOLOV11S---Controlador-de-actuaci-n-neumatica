@@ -447,6 +447,8 @@ class YOLODetector:
         self._cap_top = None
         self._cap_bottom = None
         self._cap = None  # Alias para retrocompatibilidad
+        self._ultimo_frame_top_real_ts: float = 0.0
+        self._ultimo_frame_bottom_real_ts: float = 0.0
 
     @property
     def ejecutando(self) -> bool:
@@ -826,6 +828,7 @@ class YOLODetector:
                     ret, f_top = self._cap_top.read()
                     if ret and f_top is not None:
                         frame_top = f_top
+                        self._ultimo_frame_top_real_ts = time.time()
                     else:
                         frame_top = self._generar_frame_sintetico()
                 except Exception:
@@ -839,12 +842,64 @@ class YOLODetector:
                     ret, f_bot = self._cap_bottom.read()
                     if ret and f_bot is not None:
                         frame_bottom = f_bot
+                        self._ultimo_frame_bottom_real_ts = time.time()
                     else:
                         frame_bottom = self._generar_frame_sintetico_inferior()
                 except Exception:
                     frame_bottom = self._generar_frame_sintetico_inferior()
 
         return frame_top, frame_bottom
+
+    def verificar_estado_camaras(self) -> Dict[str, Any]:
+        """
+        Evalúa si las cámaras superior e inferior están físicamente activas
+        y transmitiendo fotogramas reales en vivo.
+        """
+        ahora = time.time()
+        es_demo_top = str(self.fuente_video_top).lower() in ("demo", "simulado", "synthetic")
+        es_demo_bottom = str(self.fuente_video_bottom).lower() in ("demo", "simulado", "synthetic")
+
+        # Si aún no se han recibido frames del hilo pero los objetos de captura existen, intentar lectura rápida
+        with self._camera_lock:
+            if not es_demo_top and self._cap_top is not None and self._cap_top.isOpened():
+                if ahora - self._ultimo_frame_top_real_ts > 3.0:
+                    try:
+                        ret, f = self._cap_top.read()
+                        if ret and f is not None:
+                            self._ultimo_frame_top_real_ts = time.time()
+                    except Exception:
+                        pass
+
+            if not es_demo_bottom and self._cap_bottom is not None and self._cap_bottom.isOpened():
+                if ahora - self._ultimo_frame_bottom_real_ts > 3.0:
+                    try:
+                        ret, f = self._cap_bottom.read()
+                        if ret and f is not None:
+                            self._ultimo_frame_bottom_real_ts = time.time()
+                    except Exception:
+                        pass
+
+        top_activa = (
+            not es_demo_top
+            and self._cap_top is not None
+            and self._cap_top.isOpened()
+            and (time.time() - self._ultimo_frame_top_real_ts < 3.0)
+        )
+        bottom_activa = (
+            not es_demo_bottom
+            and self._cap_bottom is not None
+            and self._cap_bottom.isOpened()
+            and (time.time() - self._ultimo_frame_bottom_real_ts < 3.0)
+        )
+
+        return {
+            "top_ok": top_activa,
+            "bottom_ok": bottom_activa,
+            "todas_ok": top_activa and bottom_activa,
+            "ninguna_ok": not top_activa and not bottom_activa,
+            "es_demo_top": es_demo_top,
+            "es_demo_bottom": es_demo_bottom,
+        }
 
     def _leer_frame(self) -> Optional[np.ndarray]:
         """Captura un frame de la cámara superior (para compatibilidad con tests y flujos simples)."""

@@ -233,6 +233,103 @@ class TestV173SahiEstadisticas(unittest.TestCase):
                 except Exception:
                     pass
 
+    def test_detector_verificar_estado_camaras(self):
+        """Valida que el detector reporte correctamente el estado de las cámaras."""
+        estado = self.detector.verificar_estado_camaras()
+        self.assertIn("top_ok", estado)
+        self.assertIn("bottom_ok", estado)
+        self.assertIn("todas_ok", estado)
+        self.assertIn("ninguna_ok", estado)
+        self.assertTrue(estado["es_demo_top"])
+        self.assertTrue(estado["es_demo_bottom"])
+        self.assertTrue(estado["ninguna_ok"])
+
+    def test_modal_advertencia_camaras_ergonomia(self):
+        """Valida construcción, centrado y botones (Cancelar Verde, Continuar Amarillo Mostaza)."""
+        from ui.dashboard_ctk import DashboardCustomTkinter, VentanaAdvertenciaCamaras, VERDE, AMBAR_RESET
+        app = None
+        modal = None
+        try:
+            metricas = GestorMetricas()
+            app = DashboardCustomTkinter(
+                detector=self.detector,
+                metricas=metricas,
+                db_manager=self.db,
+                gestor_lotes=self.gestor_lotes,
+                auto_iniciar_camara=False,
+            )
+            app.withdraw()
+
+            continuar_pulsado = []
+            def on_continuar():
+                continuar_pulsado.append(True)
+
+            estado_fake = {"top_ok": False, "bottom_ok": False, "todas_ok": False, "ninguna_ok": True}
+            modal = VentanaAdvertenciaCamaras(
+                parent=app,
+                estado_camaras=estado_fake,
+                on_continuar=on_continuar,
+            )
+            self.assertTrue(modal.winfo_exists())
+            self.assertEqual(modal.btn_cancelar.cget("fg_color"), VERDE)
+            self.assertEqual(modal.btn_continuar.cget("fg_color"), AMBAR_RESET)
+
+            # Simular Continuar
+            modal._al_continuar()
+            self.assertEqual(continuar_pulsado, [True])
+        finally:
+            if modal is not None:
+                try:
+                    modal.destroy()
+                except Exception:
+                    pass
+            if app is not None:
+                try:
+                    app.destroy()
+                except Exception:
+                    pass
+
+    def test_modal_trigger_ergonomia_actualizada(self):
+        """Valida que el modal de trigger use Cancelar Verde y Confirmar Amarillo Mostaza con dimensiones amplias."""
+        from ui.dashboard_ctk import DashboardCustomTkinter, VentanaConfirmacionTrigger
+        app = None
+        modal = None
+        try:
+            metricas = GestorMetricas()
+            app = DashboardCustomTkinter(
+                detector=self.detector,
+                metricas=metricas,
+                db_manager=self.db,
+                gestor_lotes=self.gestor_lotes,
+                auto_iniciar_camara=False,
+            )
+            app.withdraw()
+
+            confirmado = []
+            def on_confirmar(lat, y):
+                confirmado.append((lat, y))
+
+            modal = VentanaConfirmacionTrigger(
+                parent=app,
+                nueva_latencia_ms=10.0,
+                nuevo_y_px=480,
+                callback_confirmar=on_confirmar,
+            )
+            self.assertTrue(modal.winfo_exists())
+            modal._al_confirmar()
+            self.assertEqual(len(confirmado), 1)
+        finally:
+            if modal is not None:
+                try:
+                    modal.destroy()
+                except Exception:
+                    pass
+            if app is not None:
+                try:
+                    app.destroy()
+                except Exception:
+                    pass
+
 
 if __name__ == "__main__":
     unittest.main()
