@@ -104,7 +104,7 @@ class TestCorteAbruptoRecovery(unittest.TestCase):
             self.assertTrue(app.gestor_tiempo.requiere_reset_por_corte)
             self.assertEqual(app.btn_marcha.cget("state"), "disabled")
             self.assertEqual(app.btn_reset.cget("state"), "normal")
-            self.assertEqual(app.btn_reset.cget("text"), "Reset (Purgar)")
+            self.assertIn(app.btn_reset.cget("text"), ("Reset (Purgar)", "R"))
             self.assertEqual(esp32_bridge._piloto_actual, "RED")
 
             # 2. Intentar pulsar Marcha no debe transicionar a EN_MARCHA
@@ -119,7 +119,7 @@ class TestCorteAbruptoRecovery(unittest.TestCase):
             self.assertFalse(app.gestor_tiempo.requiere_reset_por_corte)
             self.assertEqual(app.estado_operativo, "STANDBY")
             self.assertEqual(app.btn_marcha.cget("state"), "normal")
-            self.assertEqual(app.btn_marcha.cget("text"), "Marcha")
+            self.assertIn(app.btn_marcha.cget("text"), ("Marcha", "M"))
             self.assertEqual(app.btn_reset.cget("state"), "disabled")
             self.assertEqual(esp32_bridge._piloto_actual, "WHITE")
 

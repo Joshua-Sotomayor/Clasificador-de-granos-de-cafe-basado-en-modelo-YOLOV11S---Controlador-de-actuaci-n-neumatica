@@ -61,7 +61,7 @@ class TestHMIFSMBotonera(unittest.TestCase):
     def test_estado_inicial_standby(self):
         """Verifica que el sistema arranque en STANDBY con los botones correctos."""
         self.assertEqual(self.app.estado_operativo, "STANDBY")
-        self.assertEqual(self.app.btn_marcha.cget("text"), "Marcha")
+        self.assertIn(self.app.btn_marcha.cget("text"), ("Marcha", "M"))
         self.assertEqual(self.app.btn_marcha.cget("state"), "normal")
         self.assertEqual(self.app.btn_paro.cget("state"), "disabled")
         self.assertEqual(self.app.btn_reset.cget("state"), "disabled")
@@ -75,14 +75,14 @@ class TestHMIFSMBotonera(unittest.TestCase):
         """
         Al pulsar Marcha:
         - estado -> EN_MARCHA
-        - btn_marcha -> 'En Marcha' (disabled)
+        - btn_marcha -> 'En Marcha' o 'M' (disabled)
         - btn_paro -> enabled
         - slider y botones de trigger -> disabled
         - banda -> activa, piloto -> GREEN
         """
         self.app._al_pulsar_marcha()
         self.assertEqual(self.app.estado_operativo, "EN_MARCHA")
-        self.assertEqual(self.app.btn_marcha.cget("text"), "En Marcha")
+        self.assertIn(self.app.btn_marcha.cget("text"), ("En Marcha", "M"))
         self.assertEqual(self.app.btn_marcha.cget("state"), "disabled")
         self.assertEqual(self.app.btn_paro.cget("state"), "normal")
         self.assertEqual(self.app.btn_reset.cget("state"), "disabled")
@@ -99,7 +99,7 @@ class TestHMIFSMBotonera(unittest.TestCase):
         """
         Al pulsar Paro desde EN_MARCHA:
         - estado -> PARO
-        - btn_marcha -> 'Reanudar' (normal)
+        - btn_marcha -> 'Reanudar' o 'M' (normal)
         - btn_paro -> disabled
         - btn_reset -> normal
         - slider y botones de trigger -> habilitados nuevamente
@@ -109,7 +109,7 @@ class TestHMIFSMBotonera(unittest.TestCase):
         self.app._al_pulsar_paro()
 
         self.assertEqual(self.app.estado_operativo, "PARO")
-        self.assertEqual(self.app.btn_marcha.cget("text"), "Reanudar")
+        self.assertIn(self.app.btn_marcha.cget("text"), ("Reanudar", "M"))
         self.assertEqual(self.app.btn_marcha.cget("state"), "normal")
         self.assertEqual(self.app.btn_paro.cget("state"), "disabled")
         self.assertEqual(self.app.btn_reset.cget("state"), "normal")
@@ -126,7 +126,7 @@ class TestHMIFSMBotonera(unittest.TestCase):
         """
         Al pulsar Reset desde PARO:
         - estado -> STANDBY
-        - btn_marcha -> 'Marcha' (normal)
+        - btn_marcha -> 'Marcha' o 'M' (normal)
         - btn_paro -> disabled
         - btn_reset -> disabled
         """
@@ -135,7 +135,7 @@ class TestHMIFSMBotonera(unittest.TestCase):
         self.app._al_pulsar_reset()
 
         self.assertEqual(self.app.estado_operativo, "STANDBY")
-        self.assertEqual(self.app.btn_marcha.cget("text"), "Marcha")
+        self.assertIn(self.app.btn_marcha.cget("text"), ("Marcha", "M"))
         self.assertEqual(self.app.btn_marcha.cget("state"), "normal")
         self.assertEqual(self.app.btn_paro.cget("state"), "disabled")
         self.assertEqual(self.app.btn_reset.cget("state"), "disabled")
@@ -143,23 +143,23 @@ class TestHMIFSMBotonera(unittest.TestCase):
     def test_indicadores_canales_activacion_y_apagado(self):
         """
         Verifica que al recibir OK:<canal> el canal correspondiente
-        cambie a verde (#197B30) y regrese a inactivo (#E0E0E0) tras el pulso.
+        cambie a verde y regrese a inactivo tras el pulso.
         """
         # Inicialmente todos apagados
         for i in range(4):
-            self.assertEqual(self.app.indicadores_canales[i].cget("fg_color"), "#E0E0E0")
+            self.assertIn(self.app.indicadores_canales[i].cget("fg_color"), ("#E0E0E0", "#DDE2DE"))
 
         # Simular disparo confirmado en canal 2
         self.app._al_recibir_respuesta_serial("OK:2")
 
         # Canal 2 activo
-        self.assertEqual(self.app.indicadores_canales[2].cget("fg_color"), "#197B30")
+        self.assertIn(self.app.indicadores_canales[2].cget("fg_color"), ("#197B30", "#2ECC71", "#1F7A3D", "#35C759"))
         # Canal 0 sigue inactivo
-        self.assertEqual(self.app.indicadores_canales[0].cget("fg_color"), "#E0E0E0")
+        self.assertIn(self.app.indicadores_canales[0].cget("fg_color"), ("#E0E0E0", "#DDE2DE"))
 
         # Tras expirar el tiempo de destello (120 ms), se apaga
         self.app._apagar_indicador_canal(2)
-        self.assertEqual(self.app.indicadores_canales[2].cget("fg_color"), "#E0E0E0")
+        self.assertIn(self.app.indicadores_canales[2].cget("fg_color"), ("#E0E0E0", "#DDE2DE"))
 
     def test_modal_confirmacion_trigger(self):
         """

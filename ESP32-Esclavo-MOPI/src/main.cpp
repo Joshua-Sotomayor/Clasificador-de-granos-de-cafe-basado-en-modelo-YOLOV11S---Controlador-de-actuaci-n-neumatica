@@ -176,12 +176,12 @@ void procesarComando(const char* comando) {
     // Tracción de banda transportadora
     if (strcmp(comando, "BANDA:ON") == 0) {
         digitalWrite(PIN_CONTROL_BANDA, HIGH);
-        Serial.println("OK:BANDA:ON");
+        Serial.println("OK:BANDA_ON");
         return;
     }
     if (strcmp(comando, "BANDA:OFF") == 0) {
         digitalWrite(PIN_CONTROL_BANDA, LOW);
-        Serial.println("OK:BANDA:OFF");
+        Serial.println("OK:BANDA_OFF");
         return;
     }
 

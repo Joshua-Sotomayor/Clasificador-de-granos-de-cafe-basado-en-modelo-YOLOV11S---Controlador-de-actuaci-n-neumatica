@@ -50,7 +50,7 @@ MONGO_URI: str = os.getenv("MONGO_URI", "")
 MONGO_DATABASE: str = os.getenv("MONGO_DATABASE", "moppi_clasificador")
 MONGO_COLLECTION: str = os.getenv("MONGO_COLLECTION", "resumenes_lotes")
 LOCAL_DB_PATH: str = os.getenv("LOCAL_DB_PATH", "storage/respaldo_local.db")
-LOT_TIMEOUT_SECONDS: int = int(os.getenv("LOT_TIMEOUT_SECONDS", "60"))
+LOT_TIMEOUT_SECONDS: int = int(os.getenv("LOT_TIMEOUT_SECONDS", "120"))
 DATA_RETENTION_DAYS: int = int(os.getenv("DATA_RETENTION_DAYS", "30"))
 HARDWARE_POWER_KW: float = float(os.getenv("HARDWARE_POWER_KW", "0.5"))
 PNEUMATIC_VALVE_LATENCY_LIMIT_MS: float = float(os.getenv("PNEUMATIC_VALVE_LATENCY_LIMIT_MS", "35.0"))
@@ -648,13 +648,13 @@ class DatabaseManager:
         Columnas: fecha, id_lote, total_granos, total_sanos, porcentaje_calidad, duracion_min
         """
         query = (
-            "SELECT id_lote, fecha_creacion, modelo, total_granos, total_sanos, "
+            "SELECT id_lote, fecha_creacion, modelo_activo AS modelo, total_granos, total_sanos, "
             "porcentaje_calidad, duracion_segundos, sync FROM lotes WHERE 1=1"
         )
         params: List[Any] = []
 
         if filtro_modelo and str(filtro_modelo).lower() not in ("todos", "all", "none"):
-            query += " AND modelo LIKE ?"
+            query += " AND modelo_activo LIKE ?"
             params.append(f"%{filtro_modelo}%")
 
         ahora = datetime.now()

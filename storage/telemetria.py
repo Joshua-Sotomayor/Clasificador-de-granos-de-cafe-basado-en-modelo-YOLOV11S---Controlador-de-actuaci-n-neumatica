@@ -25,9 +25,12 @@ class GestorTiempoUso:
         self,
         ruta_archivo: Optional[str] = None,
         intervalo_guardado_seg: int = 60,
+        potencia_nominal_kw: float = 0.5,
+        **kwargs: Any,
     ) -> None:
         self.ruta_archivo = ruta_archivo or RUTA_ESTADO_DEFAULT
         self.intervalo_guardado_seg = intervalo_guardado_seg
+        self.potencia_nominal_kw = potencia_nominal_kw
         self._lock = threading.RLock()
 
         self.fecha_actual: str = datetime.now().strftime("%Y-%m-%d")
@@ -39,6 +42,11 @@ class GestorTiempoUso:
 
         # Cargar estado previo o inicializar
         self.cargar_estado()
+
+    @property
+    def segundos_hoy(self) -> int:
+        """Alias para segundos_acumulados de la jornada actual."""
+        return self.segundos_acumulados
 
     def cargar_estado(self) -> int:
         """

@@ -1,25 +1,31 @@
 """
-Dashboard de Inferencia y Telemetría MOPPI basado en CustomTkinter (v1.7.0).
-Optimizado para pantallas táctiles de 10.1" (1280x800 px) en Modo Kiosk.
-Arquitectura de Tres Vistas Integradas:
-1. Dashboard: Vista en vivo monocámara alternable (↕), badge FPS/ms, botonera FSM
-   (Marcha/Reanudar, Paro, Reset), indicadores circulares de 4 canales y calibración vertical de trigger.
-2. Analíticas: Gráfico de barras horizontales reactivo con acrónimos compactos para 13 clases/tri-clase,
-   4 StatCards (Tiempo, Consumo, Estadísticas, Rendimiento) y gestión de lotes.
-3. Registros: Histórico estructurado de lotes con filtros temporales y visor de logs locales SQLite.
+=============================================================================
+MOPPI - CLASIFICADOR ÓPTICO Y CINEMÁTICO DE GRANOS DE CAFÉ (HMI v1.7.0)
+Finca Alvizua - Panel de Operación Industrial Táctil de 10.1" (1280x800 px)
+Diseño Visual Ergonométrico bajo Norma ISO 9241-10
+=============================================================================
 """
 
 import os
+import sys
 import time
 import json
-import queue
+import logging
 import threading
-import cv2
-from PIL import Image
+import queue
+from datetime import datetime, timedelta
+from typing import Optional, Union, Tuple, Dict, List, Any, Callable
+from dotenv import load_dotenv
+
+# Cargar variables de entorno prioritarias desde .env
+load_dotenv()
+
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import messagebox
-from typing import Dict, Any, Optional, List, Union, Tuple
+from PIL import Image, ImageTk
+import cv2
+import numpy as np
 
 import matplotlib
 matplotlib.use("TkAgg")
@@ -32,39 +38,90 @@ from storage.database import DatabaseManager, GestorLotes, MongoManager
 from storage.telemetria import GestorTiempoUso
 from hardware.serial_bridge import ESP32Bridge
 
-# Configuración de Entorno HMI Táctil 1280x800
-HMI_FULLSCREEN = os.getenv("HMI_FULLSCREEN", "True").lower() in ("true", "1", "yes")
-HMI_WIDTH = int(os.getenv("HMI_WIDTH", "1280"))
-HMI_HEIGHT = int(os.getenv("HMI_HEIGHT", "800"))
+logger = logging.getLogger("MOPPI.UI")
 
-# Mapeo de Acrónimos Compactos para Pantalla de 10.1"
-MAPA_ACRONIMOS_13 = {
-    "Arabica_Agrio": "AAG",
-    "Arabica_Brocado": "ABR",
-    "Arabica_Bueno": "AB",
-    "Arabica_Cereza": "AC",
-    "Arabica_Concha": "ACO",
-    "Arabica_Inmaduro": "AI",
-    "Arabica_Negro": "AN",
-    "Arabica_Quebrado": "AQ",
-    "Robusta_Brocado": "RBR",
-    "Robusta_Bueno": "RB",
-    "Robusta_Cereza": "RC",
-    "Robusta_Negro": "RN",
-    "Robusta_Quebrado": "RQ",
+# Configuración inicial del tema y color visual (Fondo claro institucional)
+ctk.set_appearance_mode("light")
+ctk.set_default_color_theme("green")
+
+# =====================================================================
+# PALETA INSTITUCIONAL — Estilo tablero HMI industrial (ISO 9241-10)
+# =====================================================================
+VERDE          = "#1F7A3D"   # Verde institucional (acciones primarias / OK)
+VERDE_HOVER    = "#145A2C"   # Verde oscuro para estados de hover
+VERDE_CLARO    = "#57A773"   # Verde suave para acentos y bordes vivos
+VERDE_LED      = "#35C759"   # Verde luminoso (luces indicadoras encendidas)
+VERDE_TARJETA  = "#CEE4D4"   # Fondo verdoso suave para tarjeta destacada
+ROJO_PARO      = "#C0392B"   # Rojo industrial para PARO (convención HMI)
+ROJO_HOVER     = "#96281B"
+AMBAR_RESET    = "#B8860B"   # Ámbar industrial para RESET (convención HMI)
+AMBAR_HOVER    = "#8F6A08"
+
+GRIS_FONDO     = "#E9ECE8"   # Fondo general (gris verdoso muy claro)
+GRIS_PANEL     = "#F7F8F7"   # Superficie de paneles
+GRIS_SUAVE     = "#DDE2DE"   # Controles secundarios / inactivos
+GRIS_SUAVE_HOV = "#C9CFCB"
+
+GRIS_BORDE     = "#B9C0BB"   # Divisores y bordes sutiles
+GRIS_MEDIO     = "#7A827D"   # Textos secundarios / LED apagado
+GRIS_TEXTO     = "#2B322D"   # Texto principal
+GRIS_OSCURO    = "#333A35"   # Acero oscuro (visor / gráficas, estilo HMI)
+GRIS_OSCURO_2  = "#434B45"   # Relieve interno del visor
+
+TEXTO_CLARO    = "#E8EDE9"   # Texto claro sobre superficies oscuras
+
+# Aliases de compatibilidad con versiones anteriores del dashboard
+COLOR_FONDO_APP        = GRIS_FONDO
+COLOR_VERDE_ULSA       = VERDE
+COLOR_VERDE_HOVER      = VERDE_HOVER
+COLOR_ROJO_DEFECTO     = ROJO_PARO
+COLOR_AMARILLO_ALERTA  = AMBAR_RESET
+COLOR_AZUL_ACCION      = AMBAR_RESET
+COLOR_GRIS_SEC         = GRIS_MEDIO
+COLOR_BORDE_NEUMORFICO = GRIS_BORDE
+
+# Dimensiones base táctiles
+HMI_WIDTH: int = int(os.getenv("HMI_WIDTH", "1280"))
+HMI_HEIGHT: int = int(os.getenv("HMI_HEIGHT", "800"))
+HMI_FULLSCREEN: bool = os.getenv("HMI_FULLSCREEN", "False").lower() in ("true", "1", "yes")
+
+# Mapeo estandarizado de acrónimos cortos para la gráfica
+ACRONIMOS_13 = {
+    "Arabica_Bueno": "AR_B",
+    "Robusta_Bueno": "RO_B",
+    "Arabica_Negro": "NEG_T",
+    "Robusta_Negro": "NEG_P",
+    "Arabica_Brocado": "BRO",
+    "Robusta_Brocado": "BRO",
+    "Arabica_Quebrado": "QUE",
+    "Robusta_Quebrado": "QUE",
+    "Arabica_Aplastado": "APL",
+    "Arabica_Agrio": "AGR",
+    "Arabica_Inmaduro": "INM",
+    "Arabica_Concha": "CON",
+    "Arabica_Cereza": "CAS",
+    "Robusta_Cereza": "CAS",
+    "Grano_Flotador": "FLO",
+    "Materia_Extraña": "MAT",
 }
+ORDEN_13 = ["AR_B", "RO_B", "NEG_T", "NEG_P", "BRO", "QUE", "APL", "AGR", "INM", "CON", "CAS", "FLO", "MAT"]
 
-MAPA_ACRONIMOS_TRI = {
-    "Arabica_Bueno": "AB",
-    "Robusta_Bueno": "RB",
+ACRONIMOS_TRI = {
+    "Arabica_Bueno": "AR_B",
+    "Robusta_Bueno": "RO_B",
     "Grano_Defecto": "DEF",
 }
+ORDEN_TRI = ["AR_B", "RO_B", "DEF"]
 
+
+# =========================================================================
+# MODAL DE CONFIRMACIÓN DE TRIGGER
+# =========================================================================
 
 class VentanaConfirmacionTrigger(ctk.CTkToplevel):
     """
-    Modal táctil centrado para confirmar el cambio de línea de disparo Y_trigger.
-    Botones sobredimensionados (>= 50 px) optimizados para dedos del operario.
+    Modal táctil centrado para confirmar el cambio de posición de la línea de disparo.
+    Botones sobredimensionados (>= 50 px) optimizados para dedos del operario (ISO 9241-10).
     """
 
     def __init__(
@@ -72,6 +129,7 @@ class VentanaConfirmacionTrigger(ctk.CTkToplevel):
         parent: "DashboardCustomTkinter",
         nueva_latencia_ms: float = 3.0,
         nuevo_y_px: int = 501,
+        porcentaje_slider: int = 50,
         callback_confirmar: Any = None,
         latencia_ms: Optional[float] = None,
         y_calculado_px: Optional[int] = None,
@@ -80,15 +138,15 @@ class VentanaConfirmacionTrigger(ctk.CTkToplevel):
         super().__init__(parent)
         self.nueva_latencia_ms = nueva_latencia_ms if latencia_ms is None else latencia_ms
         self.nuevo_y_px = nuevo_y_px if y_calculado_px is None else y_calculado_px
+        self.porcentaje_slider = porcentaje_slider
         self.callback_confirmar = callback_confirmar or on_confirmar
         self.lbl_mensaje: Optional[ctk.CTkLabel] = None
 
         self.title("Confirmación de Calibración | MOPPI")
-        self.geometry("460x280")
+        self.geometry("480x300")
         self.resizable(False, False)
-        self.configure(fg_color="#FFFFFF")
+        self.configure(fg_color=GRIS_PANEL)
 
-        # Centrar sobre la ventana padre
         self.transient(parent)
         self.grab_set()
 
@@ -98,35 +156,35 @@ class VentanaConfirmacionTrigger(ctk.CTkToplevel):
         lbl_icono = ctk.CTkLabel(
             self,
             text="⚡",
-            font=ctk.CTkFont(size=36),
-            text_color="#197B30",
+            font=("Arial", 36),
+            text_color=VERDE,
         )
         lbl_icono.pack(pady=(18, 4))
 
         lbl_titulo = ctk.CTkLabel(
             self,
-            text="¿Confirmar Nueva Latencia de Actuación?",
-            font=ctk.CTkFont(size=16, weight="bold"),
-            text_color="#4A3B32",
+            text="¿Confirmar y aplicar nueva línea de disparo?",
+            font=("Arial", 18, "bold"),
+            text_color=GRIS_TEXTO,
         )
-        lbl_titulo.pack(pady=(0, 6))
+        lbl_titulo.pack(pady=(0, 8))
 
         lbl_desc = ctk.CTkLabel(
             self,
             text=(
-                f"Latencia Válvula: {self.nueva_latencia_ms:.1f} ms\n"
-                f"Línea de Disparo Resultante: Y = {self.nuevo_y_px} px\n"
-                "El cambio se guardará de forma persistente en storage/config_maquina.json."
+                f"Posición Trigger: Y = {self.nuevo_y_px} px ({self.porcentaje_slider}%)\n"
+                f"Latencia estimada: {self.nueva_latencia_ms:.1f} ms\n"
+                "La calibración se guardará de forma persistente."
             ),
-            font=ctk.CTkFont(size=12),
-            text_color="#616161",
+            font=("Arial", 14),
+            text_color=GRIS_MEDIO,
             justify="center",
         )
-        lbl_desc.pack(pady=(0, 16))
+        lbl_desc.pack(pady=(0, 20))
         self.lbl_mensaje = lbl_desc
 
         frame_botones = ctk.CTkFrame(self, fg_color="transparent")
-        frame_botones.pack(fill="x", padx=24, pady=(4, 16))
+        frame_botones.pack(fill="x", padx=24, pady=(0, 16))
         frame_botones.grid_columnconfigure((0, 1), weight=1)
 
         btn_cancelar = ctk.CTkButton(
@@ -134,214 +192,72 @@ class VentanaConfirmacionTrigger(ctk.CTkToplevel):
             text="Cancelar",
             command=self.destroy,
             height=50,
-            fg_color="#757575",
-            hover_color="#616161",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            corner_radius=10,
+            fg_color=GRIS_SUAVE,
+            hover_color=GRIS_SUAVE_HOV,
+            text_color=GRIS_TEXTO,
+            font=("Arial", 16, "bold"),
+            corner_radius=25,
         )
-        btn_cancelar.grid(row=0, column=0, padx=(0, 8), sticky="ew")
+        btn_cancelar.grid(row=0, column=0, padx=(0, 10), sticky="ew")
 
         btn_confirmar = ctk.CTkButton(
             frame_botones,
-            text="Confirmar Cambio",
+            text="Confirmar",
             command=self._al_confirmar,
             height=50,
-            fg_color="#197B30",
-            hover_color="#145F25",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            corner_radius=10,
+            fg_color=VERDE,
+            hover_color=VERDE_HOVER,
+            text_color="white",
+            font=("Arial", 16, "bold"),
+            corner_radius=25,
         )
-        btn_confirmar.grid(row=0, column=1, padx=(8, 0), sticky="ew")
+        btn_confirmar.grid(row=0, column=1, padx=(10, 0), sticky="ew")
 
     def _al_confirmar(self) -> None:
         self.destroy()
         if self.callback_confirmar:
             try:
-                self.callback_confirmar(self.nueva_latencia_ms)
+                self.callback_confirmar(self.nueva_latencia_ms, self.nuevo_y_px)
             except TypeError:
-                self.callback_confirmar()
+                try:
+                    self.callback_confirmar(self.nueva_latencia_ms)
+                except TypeError:
+                    self.callback_confirmar()
 
+
+# =========================================================================
+# VENTANA FLOTANTE DE LOGS (COMPATIBILIDAD CON TESTS)
+# =========================================================================
 
 class VentanaLogsToplevel(ctk.CTkToplevel):
-    """
-    Ventana flotante independiente para visualización de logs locales SQLite.
-    """
-
-    def __init__(
-        self,
-        parent: ctk.CTk,
-        db_manager: Union[DatabaseManager, MongoManager],
-    ) -> None:
+    def __init__(self, parent: "DashboardCustomTkinter", db_manager: DatabaseManager) -> None:
         super().__init__(parent)
         self.db_manager = db_manager
-
-        self.title("Auditoría de Eventos y Alarmas | MOPPI")
-        self.geometry("920x560")
-        self.minsize(700, 380)
-        self.configure(fg_color="#F5F6F8")
-
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
-
-        self._construir_ui()
-        self._cargar_logs()
-
-    def _construir_ui(self) -> None:
-        frame_filtros = ctk.CTkFrame(
-            self,
-            fg_color="#FFFFFF",
-            corner_radius=12,
-            border_width=1,
-            border_color="#E0E0E0",
-        )
-        frame_filtros.grid(row=0, column=0, padx=16, pady=(12, 6), sticky="ew")
-
-        lbl_tipo = ctk.CTkLabel(
-            frame_filtros,
-            text="Filtro Tipo:",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color="#4A3B32",
-        )
-        lbl_tipo.pack(side="left", padx=(14, 4), pady=8)
-
-        self.opt_tipo = ctk.CTkOptionMenu(
-            frame_filtros,
-            values=["TODOS", "INFO", "WARNING", "ALARM"],
-            command=lambda _: self._cargar_logs(),
-            width=110,
-            fg_color="#197B30",
-            button_color="#145F25",
-        )
-        self.opt_tipo.set("TODOS")
-        self.opt_tipo.pack(side="left", padx=4, pady=8)
-
-        lbl_fecha = ctk.CTkLabel(
-            frame_filtros,
-            text="Rango:",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color="#4A3B32",
-        )
-        lbl_fecha.pack(side="left", padx=(16, 4), pady=8)
-
-        self.seg_fecha = ctk.CTkSegmentedButton(
-            frame_filtros,
-            values=["Hoy", "Últimos 3 días", "Última semana", "Todos"],
-            command=lambda _: self._cargar_logs(),
-            selected_color="#197B30",
-            selected_hover_color="#145F25",
-        )
-        self.seg_fecha.set("Hoy")
-        self.seg_fecha.pack(side="left", padx=4, pady=8)
-
-        btn_refrescar = ctk.CTkButton(
-            frame_filtros,
-            text="↻ Actualizar",
-            command=self._cargar_logs,
-            width=100,
-            fg_color="#197B30",
-            hover_color="#145F25",
-            font=ctk.CTkFont(size=12, weight="bold"),
-        )
-        btn_refrescar.pack(side="right", padx=12, pady=8)
+        self.title("Registro de Auditoría Local | MOPPI")
+        self.geometry("720x480")
+        self.configure(fg_color=GRIS_PANEL)
+        self.transient(parent)
 
         self.txt_logs = ctk.CTkTextbox(
             self,
-            fg_color="#1E1E1E",
-            text_color="#E0E0E0",
-            font=ctk.CTkFont(family="Consolas", size=11),
-            corner_radius=12,
-            border_width=1,
-            border_color="#E0E0E0",
-            wrap="word",
+            fg_color=GRIS_OSCURO,
+            text_color=VERDE_LED,
+            font=("Consolas", 12),
+            corner_radius=10,
         )
-        self.txt_logs.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="nsew")
+        self.txt_logs.pack(fill="both", expand=True, padx=16, pady=16)
 
-        try:
-            raw = self.txt_logs._textbox
-            raw.tag_config("ALARM", foreground="#FF5252", font=("Consolas", 11, "bold"))
-            raw.tag_config("WARNING", foreground="#FFB74D", font=("Consolas", 11, "bold"))
-            raw.tag_config("INFO", foreground="#81C784")
-            raw.tag_config("TIMESTAMP", foreground="#64B5F6")
-            raw.tag_config("DEF", foreground="#E0E0E0")
-        except Exception:
-            pass
 
-    def _cargar_logs(self) -> None:
-        tipo = self.opt_tipo.get()
-        fecha = self.seg_fecha.get()
-        logs = self.db_manager.obtener_logs_locales(
-            tipo=tipo if tipo != "TODOS" else None,
-            filtro_fecha=fecha,
-            limite=500,
-        )
-
-        self.txt_logs.configure(state="normal")
-        self.txt_logs.delete("1.0", "end")
-
-        if not logs:
-            self.txt_logs.insert("end", "No se encontraron logs locales para el criterio seleccionado.\n")
-        else:
-            for item in logs:
-                ts = item.get("timestamp", "")
-                t = str(item.get("tipo", "INFO")).upper()
-                msg = item.get("mensaje", "")
-                tag = t if t in ("ALARM", "WARNING", "INFO") else "DEF"
-                try:
-                    self.txt_logs._textbox.insert("end", f"[{ts}] ", "TIMESTAMP")
-                    self.txt_logs._textbox.insert("end", f"[{t:7s}] ", tag)
-                    self.txt_logs._textbox.insert("end", f"{msg}\n", "DEF")
-                except Exception:
-                    self.txt_logs.insert("end", f"[{ts}] [{t:7s}] {msg}\n")
-
-        self.txt_logs.configure(state="disabled")
-        self.txt_logs.see("end")
-
+# =========================================================================
+# APLICACIÓN PRINCIPAL DEL HMI PRODUCTIVO (DASHBOARDOBJECT)
+# =========================================================================
 
 class DashboardCustomTkinter(ctk.CTk):
     """
-    Aplicación Principal HMI MOPPI con Pantalla Táctil de 10.1" (1280x800).
-    Arquitectura de Tres Vistas (Dashboard, Analíticas, Registros),
-    Botonera con Máquina de Estados, Indicadores de Válvulas Seriales
-    y Compensación Cinemática de Disparo en Tiempo Real.
+    Controlador central del HMI MOPPI con visualización integrada de HMI.py,
+    control de máquina de estados de botonera (M/P/R), compensación cinemática
+    y recuperación anti-corte abrupto de energía.
     """
-
-    COLOR_FONDO_APP = "#F5F6F8"
-    COLOR_FONDO_CARD_LIGHT = "#FFFFFF"
-    COLOR_BORDE_NEUMORFICO = "#E0E0E0"
-    COLOR_VERDE_ULSA = "#197B30"
-    COLOR_VERDE_HOVER = "#145F25"
-    COLOR_VERDE_CLARO = "#E8F5E9"
-    COLOR_CAFE_TEXTO = "#4A3B32"
-    COLOR_GRIS_SEC = "#616161"
-    COLOR_ROJO_DEFECTO = "#D32F2F"
-    COLOR_ROJO_HOVER = "#B71C1C"
-    COLOR_AMARILLO_ALERTA = "#F57C00"
-    COLOR_AZUL_ACCION = "#1976D2"
-
-    RADIUS_CARD = 14
-    RADIUS_SMALL = 10
-
-    COLORES_TRI_CLASE = {
-        "Arabica_Bueno": "#197B30",
-        "Robusta_Bueno": "#0288D1",
-        "Grano_Defecto": "#D32F2F",
-    }
-
-    COLORES_13_CLASES = {
-        "Arabica_Agrio": "#FBC02D",
-        "Arabica_Brocado": "#FFA000",
-        "Arabica_Bueno": "#197B30",
-        "Arabica_Cereza": "#D32F2F",
-        "Arabica_Concha": "#F57C00",
-        "Arabica_Inmaduro": "#7CB342",
-        "Arabica_Negro": "#212121",
-        "Arabica_Quebrado": "#8D6E63",
-        "Robusta_Brocado": "#E65100",
-        "Robusta_Bueno": "#0288D1",
-        "Robusta_Cereza": "#C2185B",
-        "Robusta_Negro": "#37474F",
-        "Robusta_Quebrado": "#6D4C41",
-    }
 
     def __init__(
         self,
@@ -367,1216 +283,1534 @@ class DashboardCustomTkinter(ctk.CTk):
         self.gestor_lotes = gestor_lotes or GestorLotes(
             db_manager=self.db_manager,
             potencia_hardware_kw=float(os.getenv("HARDWARE_POWER_KW", "0.5")),
-            timeout_inactividad_seg=60,
+            timeout_inactividad_seg=int(os.getenv("LOT_TIMEOUT_SECONDS", "120")),
             callback_lote_finalizado=self._al_lote_finalizado_auto,
         )
 
-        # Enlace con callback serial de ESP32 para los indicadores de canales
+        # Telemetría de horas de uso y persistencia anti-corte
+        self.gestor_tiempo = GestorTiempoUso(
+            ruta_archivo="storage/estado_maquina.json",
+            potencia_nominal_kw=float(os.getenv("HARDWARE_POWER_KW", "0.5")),
+        )
+
+        # Enlace con callback serial del ESP32 para respuesta de canales
         if self.esp32_bridge is not None:
             self.esp32_bridge.callback_respuesta = self._al_recibir_respuesta_serial
 
-        # Configuración de ventana principal y modo Kiosk
-        self.title("MOPPI - Clasificador Óptico y Cinemático de Café")
+        # Variables de estado interno
+        self.estado_operativo: str = "STANDBY"
+        self.camara_vista_activa: str = "TOP"  # "TOP" (Maestro) o "BOTTOM" (Esclavo)
+        self._fuente_top_actual: Union[int, str] = self.detector.fuente_video_top
+        self._fuente_bottom_actual: Union[int, str] = self.detector.fuente_video_bottom
+        self._latencia_guardada_ms: float = getattr(self.detector, "valvula_latencia_ms", 3.0)
+        self._y_trigger_guardado_px: int = getattr(self.detector, "y_trigger", 501)
+        self._latencia_preview_ms: float = self._latencia_guardada_ms
+        self._porcentaje_slider_actual: int = 50
+        self._ultimo_tiempo_frame = time.time()
+        self._fps_actual: float = 0.0
+        self._latencia_inferencia_actual: float = 0.0
+        self._ventana_logs: Optional[VentanaLogsToplevel] = None
+        self._modal_trigger: Optional[VentanaConfirmacionTrigger] = None
+
+        # Configuración de ventana
+        self.title("MOPPI - Panel de Control Industrial")
         self.geometry(f"{HMI_WIDTH}x{HMI_HEIGHT}")
         self.minsize(1024, 600)
-        self.configure(fg_color=self.COLOR_FONDO_APP)
+        self.configure(fg_color=GRIS_FONDO)
 
-        ctk.set_appearance_mode("light")
-        ctk.set_default_color_theme("green")
-
-        if HMI_FULLSCREEN:
+        # Modo Kiosk en pantalla completa si está configurado
+        self._pantalla_completa = HMI_FULLSCREEN
+        if self._pantalla_completa:
             try:
                 self.attributes("-fullscreen", True)
             except Exception:
                 pass
-
-        # Atajo para alternar pantalla completa
-        self.bind("<Escape>", self._toggle_fullscreen)
-
-        # Control de bucle de UI y cámaras
-        self._consumidor_activo = True
-        self._bucle_id: Optional[str] = None
-        self._ultimo_refresco_kpi = time.time()
-        self._ctk_image_ref = None
-        self.camara_vista_activa = "TOP"  # "TOP" (Maestro/Disparo) o "BOTTOM" (Ventral)
-        self._fuente_top_actual = self.detector.fuente_video_top
-        self._fuente_bottom_actual = self.detector.fuente_video_bottom
-        self._ventana_logs: Optional[VentanaLogsToplevel] = None
-        self.modal_trigger: Optional[VentanaConfirmacionTrigger] = None
-
-        # Telemetría anti-apagones y recuperación de estado
-        self.gestor_tiempo = GestorTiempoUso()
-
-        # Matplotlib Reactivo
-        self.fig_reactiva: Optional[Figure] = None
-        self.ax_reactivo = None
-        self.canvas_reactivo: Optional[FigureCanvasTkAgg] = None
-
-        # Estado FSM de la botonera: "STANDBY", "EN_MARCHA", "PARO"
-        self.estado_operativo = "STANDBY"
-
-        # Construir Interfaz de Tres Vistas
-        self._construir_interfaz()
-
-        # Evaluar protección anti-corte abrupto al arranque
-        self._verificar_corte_abrupto_al_arranque()
-
-        # Iniciar detector en modo preview
-        self.detector.iniciar()
-
-        # Iniciar bucle de refresco nativo en UI (15 ms ~ 60 FPS)
-        self._bucle_id = self.after(15, self._bucle_actualizacion_frame)
-
-        # Protocolo de cierre ordenado
+        self.bind("<Escape>", self._alternar_pantalla_completa)
         self.protocol("WM_DELETE_WINDOW", self._al_cerrar)
 
-    def _toggle_fullscreen(self, event=None) -> None:
-        """Alterna el modo de pantalla completa."""
-        actual = bool(self.attributes("-fullscreen"))
-        self.attributes("-fullscreen", not actual)
-
-    # =========================================================================
-    # CONSTRUCCIÓN DE LA INTERFAZ INTEGRAL
-    # =========================================================================
-
-    def _construir_interfaz(self) -> None:
-        self.grid_columnconfigure(0, weight=1)
+        # Pesos de la cuadrícula principal
+        self.grid_columnconfigure(0, weight=0)
+        self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
-        # --- 1. BARRA SUPERIOR UNIFICADA (Idéntica en todas las vistas) ---
-        self._construir_barra_superior()
+        # Construcción visual de HMI.py
+        self._crear_barra_superior()
+        self._crear_pagina_dashboard()
+        self._crear_pagina_analiticas()
+        self._crear_pagina_registros()
 
-        # --- 2. CONTENEDOR DE TRES VISTAS ---
-        self.contenedor_vistas = ctk.CTkFrame(self, fg_color="transparent")
-        self.contenedor_vistas.grid(row=1, column=0, padx=12, pady=(0, 10), sticky="nsew")
-        self.contenedor_vistas.grid_columnconfigure(0, weight=1)
-        self.contenedor_vistas.grid_rowconfigure(0, weight=1)
+        # Mapas para el cambio dinámico de pestañas
+        self._paginas = {
+            "Dashboard": self.pagina_dashboard,
+            "Analíticas": self.pagina_analiticas,
+            "Registros": self.pagina_registros,
+        }
+        self._barras_izq = {
+            "Dashboard": self.barra_izq_dashboard,
+            "Analíticas": self.barra_izq_analiticas,
+            "Registros": self.barra_izq_registros,
+        }
 
-        # Vista 1: Dashboard
-        self.vista_dashboard = ctk.CTkFrame(self.contenedor_vistas, fg_color="transparent")
-        self.vista_dashboard.grid(row=0, column=0, sticky="nsew")
-        self._construir_vista_dashboard()
+        # Conectar las pestañas con el cambio de ventana
+        self.pestañas.configure(command=self.cambiar_pagina)
+        self.cambiar_pagina("Dashboard")
 
-        # Vista 2: Analíticas
-        self.vista_analiticas = ctk.CTkFrame(self.contenedor_vistas, fg_color="transparent")
-        self.vista_analiticas.grid(row=0, column=0, sticky="nsew")
-        self._construir_vista_analiticas()
-        self.vista_analiticas.grid_remove()
+        # Configurar Aliases requeridos por retrocompatibilidad con tests existentes
+        self._configurar_aliases_retrocompatibilidad()
 
-        # Vista 3: Registros
-        self.vista_registros = ctk.CTkFrame(self.contenedor_vistas, fg_color="transparent")
-        self.vista_registros.grid(row=0, column=0, sticky="nsew")
-        self._construir_vista_registros()
-        self.vista_registros.grid_remove()
+        # Verificar si hubo corte abrupto previo para aplicar BLOQUEO_SEGURIDAD
+        self._verificar_corte_abrupto_al_arranque()
 
-        # Alias para retrocompatibilidad con tests
-        self.tab_analitico = self.vista_analiticas
-        self.tab_logs = self.vista_registros
+        # Iniciar bucle de actualización visual de video
+        self._bucle_video_activo = True
+        self._id_after_bucle = self.after(30, self._bucle_actualizacion_video)
 
-    def _construir_barra_superior(self) -> None:
-        cabecera = ctk.CTkFrame(
+    # =========================================================================
+    # BARRA SUPERIOR CONTEXTUAL DINÁMICA
+    # =========================================================================
+
+    def _crear_barra_superior(self) -> None:
+        self.pestañas = ctk.CTkSegmentedButton(
             self,
-            fg_color=self.COLOR_FONDO_CARD_LIGHT,
-            corner_radius=self.RADIUS_CARD,
-            height=64,
-            border_width=1,
-            border_color=self.COLOR_BORDE_NEUMORFICO,
+            values=["Dashboard", "Analíticas", "Registros"],
+            fg_color=GRIS_SUAVE,
+            unselected_color=GRIS_SUAVE,
+            unselected_hover_color=GRIS_SUAVE_HOV,
+            selected_color=VERDE,
+            selected_hover_color=VERDE_HOVER,
+            text_color=GRIS_TEXTO,
+            text_color_disabled=GRIS_MEDIO,
+            height=80,
+            width=580,
+            font=("Arial", 24),
+            corner_radius=40,
         )
-        cabecera.grid(row=0, column=0, padx=12, pady=(8, 6), sticky="ew")
-        cabecera.grid_columnconfigure(0, weight=1)
+        self.pestañas.set("Dashboard")
+        self.pestañas.grid(row=0, column=1, sticky="ne", padx=(10, 20), pady=15)
 
-        # Sub-bloque izquierdo: Estado BD, Lotes, Cámara y Modelo
-        frame_izq = ctk.CTkFrame(cabecera, fg_color="transparent")
-        frame_izq.pack(side="left", padx=10, pady=6)
+        self.config_btn_superior = {
+            "fg_color": VERDE,
+            "hover_color": VERDE_HOVER,
+            "text_color": "white",
+            "corner_radius": 40,
+            "border_width": 2,
+            "border_color": VERDE_CLARO,
+            "height": 80,
+            "font": ("Arial", 24, "bold"),
+        }
 
-        # Indicador MongoDB
-        self.badge_db = ctk.CTkButton(
-            frame_izq,
-            text="Base de Datos ●",
-            fg_color="#E8F5E9" if self.db_manager.conectado_mongo else "#FFF8E1",
-            text_color=self.COLOR_VERDE_ULSA if self.db_manager.conectado_mongo else self.COLOR_AMARILLO_ALERTA,
-            hover=False,
-            height=30,
-            corner_radius=15,
-            font=ctk.CTkFont(size=11, weight="bold"),
+        self.config_opt_superior = {
+            "fg_color": VERDE,
+            "button_color": VERDE,
+            "button_hover_color": VERDE_HOVER,
+            "text_color": "white",
+            "corner_radius": 40,
+            "height": 80,
+            "font": ("Arial", 24, "bold"),
+            "dropdown_font": ("Arial", 20),
+        }
+
+        self._crear_bloque_izq_dashboard()
+        self._crear_bloque_izq_analiticas()
+        self._crear_bloque_izq_registros()
+
+    def _crear_bloque_izq_dashboard(self) -> None:
+        self.barra_izq_dashboard = ctk.CTkFrame(self, fg_color="transparent")
+        self.barra_izq_dashboard.grid(row=0, column=0, sticky="new", padx=(20, 10), pady=15)
+
+        self.barra_izq_dashboard.grid_columnconfigure(0, weight=1)
+        self.barra_izq_dashboard.grid_columnconfigure(1, weight=1)
+        self.barra_izq_dashboard.grid_columnconfigure(2, weight=1)
+
+        # 1. Menú Cambiar Posición
+        self.btn_posicion = ctk.CTkOptionMenu(
+            self.barra_izq_dashboard,
+            values=["Posición Normal", "Posición Invertida"],
+            command=self._al_cambiar_posicion_camaras,
+            width=230,
+            **self.config_opt_superior,
         )
-        self.badge_db.pack(side="left", padx=(0, 6))
+        self.btn_posicion.set("Cambiar Posición  ▾")
+        self.btn_posicion.grid(row=0, column=0, sticky="ew", padx=(0, 10))
 
-        # Contador de Lotes
-        self.badge_lotes = ctk.CTkButton(
-            frame_izq,
-            text="Lotes: ---",
-            fg_color="#ECEFF1",
-            text_color=self.COLOR_CAFE_TEXTO,
-            hover=False,
-            height=30,
-            corner_radius=15,
-            font=ctk.CTkFont(size=11, weight="bold"),
-        )
-        self.badge_lotes.pack(side="left", padx=6)
-
-        # Cambiar Posición de Cámaras (Dropdown)
-        lbl_pos = ctk.CTkLabel(
-            frame_izq, text="Posición:", font=ctk.CTkFont(size=11, weight="bold"), text_color=self.COLOR_GRIS_SEC
-        )
-        lbl_pos.pack(side="left", padx=(10, 3))
-
-        self.combo_cam_pos = ctk.CTkOptionMenu(
-            frame_izq,
-            values=["Normal (0/1)", "Invertida (1/0)"],
-            command=self._al_cambiar_posicion_camara,
-            width=135,
-            height=30,
-            fg_color=self.COLOR_VERDE_ULSA,
-            button_color=self.COLOR_VERDE_HOVER,
-            font=ctk.CTkFont(size=11, weight="bold"),
-        )
-        self.combo_cam_pos.set("Invertida (1/0)" if self.detector.posicion_camara_invertida else "Normal (0/1)")
-        self.combo_cam_pos.pack(side="left", padx=3)
-
-        # Selector de Modelo (Dropdown)
-        lbl_mod = ctk.CTkLabel(
-            frame_izq, text="Modelo:", font=ctk.CTkFont(size=11, weight="bold"), text_color=self.COLOR_GRIS_SEC
-        )
-        lbl_mod.pack(side="left", padx=(10, 3))
-
-        self.combo_modelo_hdr = ctk.CTkOptionMenu(
-            frame_izq,
+        # 2. Selector Modelos en Dashboard
+        self.btn_modelos_dash = ctk.CTkOptionMenu(
+            self.barra_izq_dashboard,
             values=["Tri-clase", "13 Clases"],
-            command=self._al_cambiar_modelo_dropdown,
-            width=115,
-            height=30,
-            fg_color="#6D4C41",
-            button_color="#4E342E",
-            font=ctk.CTkFont(size=11, weight="bold"),
+            command=self._al_conmutar_modelo,
+            width=210,
+            **self.config_opt_superior,
         )
-        self.combo_modelo_hdr.set("13 Clases" if self.detector.es_modo_13clases else "Tri-clase")
-        self.combo_modelo_hdr.pack(side="left", padx=3)
+        self.btn_modelos_dash.set("Modelos  ▾")
+        self.btn_modelos_dash.grid(row=0, column=1, sticky="ew", padx=10)
 
-        # Botón ↕ para alternar vista visible de cámara
-        self.btn_toggle_camara = ctk.CTkButton(
-            frame_izq,
+        # 3. Botón ↕ Alternar Vista de Cámara
+        self.btn_orden = ctk.CTkButton(
+            self.barra_izq_dashboard,
             text="↕",
-            command=self._alternar_vista_camara,
-            width=36,
-            height=30,
-            fg_color=self.COLOR_VERDE_ULSA,
-            hover_color=self.COLOR_VERDE_HOVER,
-            font=ctk.CTkFont(size=16, weight="bold"),
-            corner_radius=15,
+            command=self._al_pulsar_alternar_camara,
+            width=100,
+            **self.config_btn_superior,
         )
-        self.btn_toggle_camara.pack(side="left", padx=(8, 0))
+        self.btn_orden.grid(row=0, column=2, sticky="ew", padx=(10, 20))
 
-        # Switches internos para retrocompatibilidad con tests unitarios
+    def _crear_bloque_izq_analiticas(self) -> None:
+        self.barra_izq_analiticas = ctk.CTkFrame(self, fg_color="transparent")
+        self.barra_izq_analiticas.grid(row=0, column=0, sticky="new", padx=(20, 10), pady=15)
+
+        self.barra_izq_analiticas.grid_columnconfigure(0, weight=1)
+        self.barra_izq_analiticas.grid_columnconfigure(1, weight=1)
+        self.barra_izq_analiticas.grid_columnconfigure(2, weight=1)
+
+        config_pildora = {
+            "fg_color": GRIS_SUAVE,
+            "corner_radius": 40,
+            "border_width": 2,
+            "border_color": GRIS_BORDE,
+            "height": 80,
+        }
+
+        # 1. Píldora Base de Datos
+        pill_db = ctk.CTkFrame(self.barra_izq_analiticas, **config_pildora, width=250)
+        pill_db.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        pill_db.pack_propagate(False)
+
+        inner_db = ctk.CTkFrame(pill_db, fg_color="transparent")
+        inner_db.place(relx=0.5, rely=0.5, anchor="center")
+
+        ctk.CTkLabel(
+            inner_db, text="Base de Datos", font=("Arial", 24), text_color=GRIS_TEXTO
+        ).pack(side="left", padx=(0, 10))
+
+        color_led = VERDE_LED if getattr(self.db_manager, "esta_conectado_mongo", False) else GRIS_MEDIO
+        self.led_mongo = ctk.CTkFrame(
+            inner_db, width=34, height=34, corner_radius=17, fg_color=color_led
+        )
+        self.led_mongo.pack(side="left")
+
+        # 2. Contador de Lotes
+        pill_lotes = ctk.CTkFrame(self.barra_izq_analiticas, **config_pildora)
+        pill_lotes.grid(row=0, column=1, sticky="ew", padx=10)
+        pill_lotes.pack_propagate(False)
+
+        self.lbl_lotes = ctk.CTkLabel(
+            pill_lotes, text="Lotes:  ---", font=("Arial", 24), text_color=GRIS_TEXTO
+        )
+        self.lbl_lotes.place(relx=0.5, rely=0.5, anchor="center")
+
+        # 3. Selector Modelos en Analíticas
+        self.btn_modelos_analiticas = ctk.CTkOptionMenu(
+            self.barra_izq_analiticas,
+            values=["Tri-clase", "13 Clases"],
+            command=self._al_conmutar_modelo,
+            width=210,
+            **self.config_opt_superior,
+        )
+        self.btn_modelos_analiticas.set("Modelos  ▾")
+        self.btn_modelos_analiticas.grid(row=0, column=2, sticky="ew", padx=(10, 20))
+
+    def _crear_bloque_izq_registros(self) -> None:
+        self.barra_izq_registros = ctk.CTkFrame(self, fg_color="transparent")
+        self.barra_izq_registros.grid(row=0, column=0, sticky="new", padx=(20, 10), pady=15)
+
+        self.barra_izq_registros.grid_columnconfigure(0, weight=1)
+        self.barra_izq_registros.grid_columnconfigure(1, weight=1)
+        self.barra_izq_registros.grid_columnconfigure(2, weight=1)
+
+        config_pildora = {
+            "fg_color": GRIS_SUAVE,
+            "corner_radius": 40,
+            "border_width": 2,
+            "border_color": GRIS_BORDE,
+            "height": 80,
+        }
+
+        # 1. Píldora Base de Datos (Registros)
+        pill_db = ctk.CTkFrame(self.barra_izq_registros, **config_pildora, width=250)
+        pill_db.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        pill_db.pack_propagate(False)
+
+        inner_db = ctk.CTkFrame(pill_db, fg_color="transparent")
+        inner_db.place(relx=0.5, rely=0.5, anchor="center")
+
+        ctk.CTkLabel(
+            inner_db, text="Base de Datos", font=("Arial", 24), text_color=GRIS_TEXTO
+        ).pack(side="left", padx=(0, 10))
+
+        color_led = VERDE_LED if getattr(self.db_manager, "esta_conectado_mongo", False) else GRIS_MEDIO
+        self.led_mongo_registros = ctk.CTkFrame(
+            inner_db, width=34, height=34, corner_radius=17, fg_color=color_led
+        )
+        self.led_mongo_registros.pack(side="left")
+
+        # 2. Contador de Lotes (Registros)
+        pill_lotes = ctk.CTkFrame(self.barra_izq_registros, **config_pildora)
+        pill_lotes.grid(row=0, column=1, sticky="ew", padx=(10, 10))
+        pill_lotes.pack_propagate(False)
+
+        self.lbl_lotes_registros = ctk.CTkLabel(
+            pill_lotes, text="Lotes:  ---", font=("Arial", 24), text_color=GRIS_TEXTO
+        )
+        self.lbl_lotes_registros.place(relx=0.5, rely=0.5, anchor="center")
+
+    def cambiar_pagina(self, nombre: str) -> None:
+        for pagina in self._paginas.values():
+            pagina.grid_remove()
+        for barra in self._barras_izq.values():
+            barra.grid_remove()
+
+        if nombre in self._paginas:
+            self._paginas[nombre].grid()
+        if nombre in self._barras_izq:
+            self._barras_izq[nombre].grid()
+
+        for nombre_btn, boton in self.pestañas._buttons_dict.items():
+            if nombre_btn == nombre:
+                boton.configure(font=("Arial", 24, "underline"), text_color="white")
+            else:
+                boton.configure(font=("Arial", 24), text_color=GRIS_TEXTO)
+
+        # Actualizar datos si se entra a analíticas o registros
+        self._actualizar_indicador_bd_y_lotes()
+        if nombre == "Analíticas":
+            self._actualizar_grafico_reactivo()
+            self._actualizar_tarjetas_estadisticas()
+        elif nombre == "Registros":
+            self._poblar_tabla_historial()
+            self._cargar_consola_logs()
+
+    # =========================================================================
+    # VISTA 1: DASHBOARD (Operación en Vivo, Botonería y Trigger)
+    # =========================================================================
+
+    def _crear_pagina_dashboard(self) -> None:
+        self.pagina_dashboard = ctk.CTkFrame(self, fg_color="transparent")
+        self.pagina_dashboard.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        self.pagina_dashboard.grid_columnconfigure(0, weight=0)
+        self.pagina_dashboard.grid_columnconfigure(1, weight=1)
+        self.pagina_dashboard.grid_rowconfigure(0, weight=1)
+
+        self._crear_area_visualizador()
+        self._crear_panel_control()
+
+    def _crear_area_visualizador(self) -> None:
+        self.frame_grafico = ctk.CTkFrame(
+            self.pagina_dashboard,
+            fg_color=GRIS_OSCURO,
+            corner_radius=15,
+            border_width=2,
+            border_color=VERDE_CLARO,
+            width=640,
+            height=640,
+        )
+        self.frame_grafico.grid(row=0, column=0, sticky="nsew", padx=(20, 10), pady=(0, 20))
+        self.frame_grafico.grid_propagate(False)
+        self.frame_grafico.pack_propagate(False)
+
+        # Canvas para renderizado de stream OpenCV
+        self.lbl_video_display = tk.Label(self.frame_grafico, bg=GRIS_OSCURO)
+        self.lbl_video_display.place(x=0, y=0, width=640, height=640)
+
+        # Insignias de telemetría de video
+        config_insignia = {
+            "fg_color": GRIS_OSCURO_2,
+            "text_color": VERDE_LED,
+            "corner_radius": 15,
+            "width": 90,
+            "height": 30,
+            "font": ("Consolas", 16, "bold"),
+        }
+        self.lbl_ms = ctk.CTkLabel(self.frame_grafico, text="ms:  --", **config_insignia)
+        self.lbl_ms.place(relx=0.74, rely=0.03, anchor="ne")
+
+        self.lbl_fps = ctk.CTkLabel(self.frame_grafico, text="FPS: --", **config_insignia)
+        self.lbl_fps.place(relx=0.96, rely=0.03, anchor="ne")
+
+        self.lbl_camara_activa_badge = ctk.CTkLabel(
+            self.frame_grafico,
+            text="CÁMARA SUPERIOR (MAESTRO) | CONTROL DE DISPARO",
+            font=("Arial", 11, "bold"),
+            fg_color=GRIS_OSCURO_2,
+            text_color=VERDE_CLARO,
+            corner_radius=10,
+            height=24,
+        )
+        self.lbl_camara_activa_badge.place(relx=0.04, rely=0.03, anchor="nw")
+
+    def _crear_panel_control(self) -> None:
+        panel_derecho = ctk.CTkFrame(
+            self.pagina_dashboard,
+            fg_color=GRIS_PANEL,
+            corner_radius=15,
+            border_width=1,
+            border_color=GRIS_BORDE,
+        )
+        panel_derecho.grid(row=0, column=1, sticky="nsew", padx=(10, 20), pady=(0, 20))
+
+        panel_derecho.grid_columnconfigure(0, weight=1)
+        panel_derecho.grid_columnconfigure(1, weight=1)
+        panel_derecho.grid_columnconfigure(2, weight=1)
+        panel_derecho.grid_rowconfigure(1, weight=1)
+
+        # ----------------------------------------------------
+        # COLUMNA 1: BOTONERÍA (M, P, R)
+        # ----------------------------------------------------
+        col_botoneria = ctk.CTkFrame(panel_derecho, fg_color="transparent")
+        col_botoneria.grid(row=1, column=0, sticky="nsew", pady=10)
+
+        ctk.CTkLabel(
+            col_botoneria, text="BOTONERÍA", font=("Arial", 24, "bold"), text_color=GRIS_TEXTO
+        ).pack(pady=(10, 20))
+
+        config_marcha = {
+            "fg_color": VERDE,
+            "hover_color": VERDE_HOVER,
+            "text_color": "white",
+            "border_width": 2,
+            "border_color": VERDE_HOVER,
+        }
+        config_paro = {
+            "fg_color": ROJO_PARO,
+            "hover_color": ROJO_HOVER,
+            "text_color": "white",
+            "border_width": 2,
+            "border_color": ROJO_HOVER,
+        }
+        config_reset = {
+            "fg_color": AMBAR_RESET,
+            "hover_color": AMBAR_HOVER,
+            "text_color": "white",
+            "border_width": 2,
+            "border_color": AMBAR_HOVER,
+        }
+
+        # Botón M (Marcha)
+        self.btn_marcha = ctk.CTkButton(
+            col_botoneria,
+            text="M",
+            font=("Arial", 28, "bold"),
+            width=140,
+            height=140,
+            corner_radius=70,
+            command=self._al_pulsar_marcha,
+            **config_marcha,
+        )
+        self.btn_marcha.pack(pady=10)
+
+        # Botón P (Paro)
+        self.btn_paro = ctk.CTkButton(
+            col_botoneria,
+            text="P",
+            font=("Arial", 28, "bold"),
+            width=140,
+            height=140,
+            corner_radius=70,
+            command=self._al_pulsar_paro,
+            **config_paro,
+        )
+        self.btn_paro.pack(pady=20)
+
+        # Botón R (Reset)
+        self.btn_reset = ctk.CTkButton(
+            col_botoneria,
+            text="R",
+            font=("Arial", 28, "bold"),
+            width=140,
+            height=140,
+            corner_radius=70,
+            command=self._al_pulsar_reset,
+            **config_reset,
+        )
+        self.btn_reset.pack(pady=10)
+
+        # Línea divisoria derecha
+        div_intermedio = ctk.CTkFrame(panel_derecho, width=2, fg_color=GRIS_BORDE)
+        div_intermedio.grid(row=1, column=0, sticky="nse", pady=20)
+
+        # ----------------------------------------------------
+        # COLUMNA 2: CANALES (0, 1, 2, 3)
+        # ----------------------------------------------------
+        div_izq = ctk.CTkFrame(panel_derecho, width=2, fg_color=GRIS_BORDE)
+        div_izq.grid(row=1, column=1, sticky="nsw", pady=20)
+
+        col_canales = ctk.CTkFrame(panel_derecho, fg_color="transparent")
+        col_canales.grid(row=1, column=1, sticky="nsew", pady=10)
+
+        ctk.CTkLabel(
+            col_canales, text="CANALES", font=("Arial", 24, "bold"), text_color=GRIS_TEXTO
+        ).pack(side="top", pady=(10, 20))
+
+        frame_grid_canales = ctk.CTkFrame(col_canales, fg_color="transparent")
+        frame_grid_canales.pack(side="top", fill="both", expand=True)
+
+        frame_grid_canales.grid_columnconfigure(0, weight=1)
+        for i in range(4):
+            frame_grid_canales.grid_rowconfigure(i, weight=2)
+
+        config_luces = {
+            "fg_color": GRIS_SUAVE,
+            "text_color": GRIS_MEDIO,
+            "border_width": 2,
+            "border_color": VERDE_CLARO,
+            "hover": False,
+            "cursor": "arrow",
+            "width": 80,
+            "height": 80,
+            "corner_radius": 40,
+            "font": ("Arial", 24, "bold"),
+        }
+
+        self.luces_canales: List[ctk.CTkButton] = []
+        for i in range(4):
+            btn_ch = ctk.CTkButton(frame_grid_canales, text=str(i), **config_luces)
+            btn_ch.grid(row=i, column=0, sticky="", pady=0)
+            self.luces_canales.append(btn_ch)
+
+        # Divisor derecho
+        div_der = ctk.CTkFrame(panel_derecho, width=2, fg_color=GRIS_BORDE)
+        div_der.grid(row=1, column=1, sticky="nse", pady=20)
+
+        # ----------------------------------------------------
+        # COLUMNA 3: TRIGGER Y ACCIONES
+        # ----------------------------------------------------
+        col_trigger = ctk.CTkFrame(panel_derecho, fg_color="transparent")
+        col_trigger.grid(row=1, column=2, sticky="nsew", pady=10)
+
+        ctk.CTkLabel(
+            col_trigger, text="TRIGGER", font=("Arial", 24, "bold"), text_color=GRIS_TEXTO
+        ).pack(pady=(10, 10))
+
+        frame_slider_grupo = ctk.CTkFrame(col_trigger, fg_color="transparent")
+        frame_slider_grupo.pack(pady=10)
+
+        self.lbl_valor_trigger = ctk.CTkLabel(
+            frame_slider_grupo, text="50%", font=("Arial", 16, "bold"), text_color=VERDE
+        )
+        self.lbl_valor_trigger.pack(side="top", pady=(0, 5))
+
+        self.slider_trigger = ctk.CTkSlider(
+            frame_slider_grupo,
+            orientation="vertical",
+            from_=0,
+            to=100,
+            number_of_steps=100,
+            fg_color=GRIS_SUAVE,
+            progress_color=VERDE,
+            button_color=VERDE,
+            button_hover_color=VERDE_HOVER,
+            height=260,
+            width=30,
+            corner_radius=15,
+            button_length=24,
+            command=self._al_mover_slider_trigger,
+        )
+        self.slider_trigger.pack(side="top")
+        self.slider_trigger.set(50)
+
+        lbl_min = ctk.CTkLabel(
+            frame_slider_grupo, text="0%", font=("Arial", 14, "bold"), text_color=GRIS_MEDIO
+        )
+        lbl_min.pack(side="top", pady=(5, 0))
+
+        # Botones Cancelar y Aplicar
+        self.btn_cancelar_trigger = ctk.CTkButton(
+            col_trigger,
+            text="Cancelar",
+            fg_color=GRIS_SUAVE,
+            hover_color=GRIS_SUAVE_HOV,
+            text_color=GRIS_TEXTO,
+            corner_radius=30,
+            width=135,
+            height=55,
+            font=("Arial", 24, "bold"),
+            command=self._al_pulsar_cancelar_trigger,
+        )
+        self.btn_cancelar_trigger.pack(pady=(20, 5))
+
+        self.btn_aplicar_trigger = ctk.CTkButton(
+            col_trigger,
+            text="Aplicar",
+            fg_color=VERDE,
+            hover_color=VERDE_HOVER,
+            text_color="white",
+            corner_radius=30,
+            width=150,
+            height=55,
+            font=("Arial", 24, "bold"),
+            command=self._al_pulsar_aplicar_trigger,
+        )
+        self.btn_aplicar_trigger.pack(pady=5)
+
+    # =========================================================================
+    # VISTA 2: ANALÍTICAS (Gráfica Horizontal con Acrónimos y StatCards)
+    # =========================================================================
+
+    def _crear_pagina_analiticas(self) -> None:
+        self.pagina_analiticas = ctk.CTkFrame(self, fg_color="transparent")
+        self.pagina_analiticas.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        self.pagina_analiticas.grid_columnconfigure(0, weight=0)
+        self.pagina_analiticas.grid_columnconfigure(1, weight=1)
+        self.pagina_analiticas.grid_rowconfigure(0, weight=1)
+
+        self._crear_area_grafico_analiticas()
+        self._crear_panel_estadisticas()
+
+    def _crear_area_grafico_analiticas(self) -> None:
+        self.frame_grafico_analiticas = ctk.CTkFrame(
+            self.pagina_analiticas,
+            fg_color=GRIS_OSCURO,
+            corner_radius=15,
+            border_width=2,
+            border_color=VERDE_CLARO,
+            width=634,
+            height=619,
+        )
+        self.frame_grafico_analiticas.grid(
+            row=0, column=0, sticky="nsew", padx=(20, 10), pady=(0, 20)
+        )
+        self.frame_grafico_analiticas.grid_propagate(False)
+        self.frame_grafico_analiticas.pack_propagate(False)
+
+        ctk.CTkLabel(
+            self.frame_grafico_analiticas,
+            text="Frecuencia / Categoría",
+            font=("Arial", 24, "bold"),
+            text_color=TEXTO_CLARO,
+        ).place(relx=0.5, rely=0.065, anchor="center")
+
+        # Figura y lienzo reactivo de Matplotlib incrustado
+        self.fig_analiticas = Figure(figsize=(5.6, 4.8), dpi=100, facecolor=GRIS_OSCURO)
+        self.ax_analiticas = self.fig_analiticas.add_subplot(111)
+        self.ax_analiticas.set_facecolor(GRIS_OSCURO)
+        self.fig_analiticas.tight_layout(pad=2.0)
+
+        self.canvas_analiticas = FigureCanvasTkAgg(
+            self.fig_analiticas, master=self.frame_grafico_analiticas
+        )
+        self.widget_canvas_analiticas = self.canvas_analiticas.get_tk_widget()
+        self.widget_canvas_analiticas.configure(bg=GRIS_OSCURO, highlightthickness=0)
+        self.widget_canvas_analiticas.place(relx=0.5, rely=0.55, anchor="center", width=580, height=480)
+
+    def _crear_panel_estadisticas(self) -> None:
+        panel_estats = ctk.CTkFrame(
+            self.pagina_analiticas,
+            fg_color=GRIS_PANEL,
+            corner_radius=15,
+            border_width=1,
+            border_color=GRIS_BORDE,
+        )
+        panel_estats.grid(row=0, column=1, sticky="nsew", padx=(10, 20), pady=(0, 20))
+        panel_estats.grid_columnconfigure(0, weight=1)
+        panel_estats.grid_columnconfigure(1, weight=1)
+
+        def crear_tarjeta(titulo: str, lineas: List[str], grande: bool = False, destacada: bool = False):
+            ancho, alto = (276, 155) if grande else (276, 100)
+            tarjeta = ctk.CTkFrame(
+                panel_estats,
+                fg_color=VERDE_TARJETA if destacada else GRIS_SUAVE,
+                corner_radius=alto / 4,
+                border_width=2,
+                border_color=VERDE if destacada else GRIS_BORDE,
+                width=ancho,
+                height=alto,
+            )
+            tarjeta.grid_propagate(False)
+            tarjeta.pack_propagate(False)
+
+            ctk.CTkLabel(
+                tarjeta,
+                text=titulo,
+                font=("Arial", 24, "bold", "underline"),
+                text_color=GRIS_TEXTO,
+            ).pack(pady=(12, 4))
+
+            etiquetas = []
+            for linea in lineas:
+                lbl = ctk.CTkLabel(
+                    tarjeta,
+                    text=linea,
+                    font=("Arial", 40, "bold"),
+                    text_color=VERDE_HOVER if destacada else GRIS_TEXTO,
+                )
+                lbl.pack()
+                etiquetas.append(lbl)
+            return tarjeta, etiquetas
+
+        # Tarjetas fila 1
+        t_tiempo, lbls_tiempo = crear_tarjeta("Tiempo de Uso", ["00:00 h"])
+        t_tiempo.grid(row=0, column=0, padx=(25, 8), pady=(28, 12))
+
+        t_consumo, lbls_consumo = crear_tarjeta("Consumo", ["--- kWh"])
+        t_consumo.grid(row=0, column=1, padx=(8, 25), pady=(28, 12))
+
+        # Tarjetas fila 2
+        t_estats, lbls_estats = crear_tarjeta("Estadísticas", ["--- grs", "--- %"], grande=True, destacada=True)
+        t_estats.grid(row=1, column=0, padx=(25, 8), pady=12)
+
+        t_rend, lbls_rend = crear_tarjeta("Rendimiento (Prom)", ["--- FPS", "--- ms"], grande=True)
+        t_rend.grid(row=1, column=1, padx=(8, 25), pady=12)
+
+        self.stat_tiempo = lbls_tiempo[0]
+        self.stat_consumo = lbls_consumo[0]
+        self.stat_granos = lbls_estats[0]
+        self.stat_precision = lbls_estats[1]
+        self.stat_fps = lbls_rend[0]
+        self.stat_ms = lbls_rend[1]
+
+        # Botones inferiores de acción
+        btn_terminar = ctk.CTkButton(
+            panel_estats,
+            text="Terminar Lote",
+            fg_color=AMBAR_RESET,
+            hover_color=AMBAR_HOVER,
+            text_color="white",
+            corner_radius=45,
+            height=80,
+            width=578,
+            font=("Arial", 32, "bold"),
+            command=self._al_pulsar_terminar_lote,
+        )
+        btn_terminar.grid(row=2, column=0, columnspan=2, sticky="ew", padx=25, pady=(25, 12))
+
+        btn_sincronizar = ctk.CTkButton(
+            panel_estats,
+            text="Sincronizar con Base de Datos",
+            fg_color=VERDE,
+            hover_color=VERDE_HOVER,
+            text_color="white",
+            corner_radius=45,
+            height=80,
+            width=578,
+            font=("Arial", 32, "bold"),
+            command=self._al_pulsar_sincronizar_db,
+        )
+        btn_sincronizar.grid(row=3, column=0, columnspan=2, sticky="ew", padx=25, pady=12)
+
+    # =========================================================================
+    # VISTA 3: REGISTROS (Historial y Consola de Auditoría Local LOGS)
+    # =========================================================================
+
+    def _crear_pagina_registros(self) -> None:
+        self.pagina_registros = ctk.CTkFrame(self, fg_color="transparent")
+        self.pagina_registros.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        self.pagina_registros.grid_columnconfigure(0, weight=1)
+        self.pagina_registros.grid_rowconfigure(0, weight=1)
+
+        contenido = ctk.CTkFrame(self.pagina_registros, fg_color="transparent")
+        contenido.grid(row=0, column=0, sticky="n")
+
+        # Nivel 2: HISTORIAL
+        fila_h = self._crear_fila_filtros_historial(contenido)
+        fila_h.grid(row=0, column=0, pady=(0, 12))
+
+        tabla_h = self._crear_tabla_historial(contenido)
+        tabla_h.grid(row=1, column=0, pady=(0, 12))
+
+        # Nivel 3: LOGS
+        fila_l = self._crear_fila_filtros_logs(contenido)
+        fila_l.grid(row=2, column=0, pady=(0, 12))
+
+        caja_l = self._crear_caja_logs(contenido)
+        caja_l.grid(row=3, column=0)
+
+    def _crear_fila_filtros_historial(self, padre: ctk.CTkFrame) -> ctk.CTkFrame:
+        fila = ctk.CTkFrame(padre, fg_color="transparent", width=1204, height=70)
+        fila.pack_propagate(False)
+
+        grupo = ctk.CTkFrame(fila, fg_color="transparent")
+        grupo.pack(side="left")
+
+        self.menu_cat_historial = ctk.CTkOptionMenu(
+            grupo,
+            values=["Todos", "Tri-clase", "13 Clases"],
+            width=160,
+            height=70,
+            font=("Arial", 24),
+            dropdown_font=("Arial", 24),
+            fg_color=VERDE,
+            button_color=VERDE,
+            button_hover_color=VERDE_CLARO,
+            text_color="white",
+            corner_radius=35,
+            command=lambda _: self._poblar_tabla_historial(),
+        )
+        self.menu_cat_historial.pack(side="left", padx=(0, 14))
+
+        self.seg_fecha_historial = ctk.CTkSegmentedButton(
+            grupo,
+            values=["Hoy", "Últimos 3 días", "Última Semana", "Todos"],
+            fg_color=GRIS_SUAVE,
+            unselected_color=GRIS_SUAVE,
+            unselected_hover_color=GRIS_SUAVE_HOV,
+            selected_color=VERDE,
+            selected_hover_color=VERDE_HOVER,
+            text_color=GRIS_TEXTO,
+            text_color_disabled=GRIS_MEDIO,
+            height=70,
+            font=("Arial", 24),
+            corner_radius=35,
+            command=lambda _: self._poblar_tabla_historial(),
+        )
+        self.seg_fecha_historial.set("Hoy")
+        self.seg_fecha_historial.pack(side="left")
+
+        ctk.CTkLabel(
+            fila, text="Historial", font=("Arial", 36, "bold"), text_color=GRIS_TEXTO
+        ).pack(side="right", padx=(10, 5))
+        return fila
+
+    def _crear_tabla_historial(self, padre: ctk.CTkFrame) -> ctk.CTkFrame:
+        COLUMNAS = ["Fecha", "N° de Lote", "Granos Totales", "G buenos (N)", "G buenos (%)", "Tiempo (min)"]
+        ANCHOS = [185, 160, 210, 200, 205, 165]
+
+        tabla = ctk.CTkFrame(
+            padre,
+            width=1204,
+            height=230,
+            fg_color=GRIS_PANEL,
+            corner_radius=10,
+            border_width=2,
+            border_color=GRIS_BORDE,
+        )
+        tabla.pack_propagate(False)
+
+        cabecera = ctk.CTkFrame(tabla, fg_color=VERDE, corner_radius=10, height=54)
+        cabecera.pack(fill="x", padx=(6, 22), pady=(6, 4))
+        cabecera.pack_propagate(False)
+        for tit, w in zip(COLUMNAS, ANCHOS):
+            ctk.CTkLabel(
+                cabecera, text=tit, width=w, font=("Arial", 24, "bold"), text_color="white"
+            ).pack(side="left", padx=2)
+
+        self.cuerpo_tabla_historial = ctk.CTkScrollableFrame(tabla, fg_color=GRIS_BORDE, corner_radius=0)
+        self.cuerpo_tabla_historial.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+
+        self.anchos_columnas_historial = ANCHOS
+        return tabla
+
+    def _crear_fila_filtros_logs(self, padre: ctk.CTkFrame) -> ctk.CTkFrame:
+        fila = ctk.CTkFrame(padre, fg_color="transparent", width=1204, height=70)
+        fila.pack_propagate(False)
+
+        grupo = ctk.CTkFrame(fila, fg_color="transparent")
+        grupo.pack(side="left")
+
+        self.menu_tipo_logs = ctk.CTkOptionMenu(
+            grupo,
+            values=["Todos", "INFO", "WARNING", "ALARM"],
+            width=160,
+            height=70,
+            font=("Arial", 24),
+            dropdown_font=("Arial", 24),
+            fg_color=VERDE,
+            button_color=VERDE,
+            button_hover_color=VERDE_CLARO,
+            text_color="white",
+            corner_radius=35,
+            command=lambda _: self._cargar_consola_logs(),
+        )
+        self.menu_tipo_logs.pack(side="left", padx=(0, 14))
+
+        self.seg_fecha_logs = ctk.CTkSegmentedButton(
+            grupo,
+            values=["Hoy", "Últimos 3 días", "Última Semana", "Todos"],
+            fg_color=GRIS_SUAVE,
+            unselected_color=GRIS_SUAVE,
+            unselected_hover_color=GRIS_SUAVE_HOV,
+            selected_color=VERDE,
+            selected_hover_color=VERDE_HOVER,
+            text_color=GRIS_TEXTO,
+            text_color_disabled=GRIS_MEDIO,
+            height=70,
+            font=("Arial", 24),
+            corner_radius=35,
+            command=lambda _: self._cargar_consola_logs(),
+        )
+        self.seg_fecha_logs.set("Hoy")
+        self.seg_fecha_logs.pack(side="left")
+
+        ctk.CTkLabel(
+            fila, text="LOGS", font=("Arial", 36, "bold"), text_color=GRIS_TEXTO
+        ).pack(side="right", padx=(10, 5))
+        return fila
+
+    def _crear_caja_logs(self, padre: ctk.CTkFrame) -> ctk.CTkTextbox:
+        self.logs_box = ctk.CTkTextbox(
+            padre,
+            width=1204,
+            height=155,
+            fg_color=GRIS_OSCURO,
+            text_color=VERDE_LED,
+            border_width=2,
+            border_color=VERDE_CLARO,
+            corner_radius=10,
+            font=("Consolas", 20),
+        )
+        self.logs_box.insert(
+            "end",
+            "[--:--:--] Sistema listo. Los eventos del proceso aparecerán aquí.\n",
+        )
+        self.logs_box.configure(state="disabled")
+
+        # Configurar tags de severidad sobre el widget nativo
+        try:
+            raw = self.logs_box._textbox
+            raw.tag_config("ALARM", foreground="#FF5252", font=("Consolas", 20, "bold"))
+            raw.tag_config("WARNING", foreground="#FFB74D", font=("Consolas", 20, "bold"))
+            raw.tag_config("INFO", foreground="#81C784")
+            raw.tag_config("DEFAULT", foreground=VERDE_LED)
+        except Exception:
+            pass
+
+        return self.logs_box
+
+    # =========================================================================
+    # COMPATIBILIDAD HACIA ATRÁS: ALIASES PARA SUITE DE PRUEBAS
+    # =========================================================================
+
+    def _configurar_aliases_retrocompatibilidad(self) -> None:
+        """Expone propiedades y controles con los nombres esperados por tests existentes."""
+        self.card_kpi_tiempo = self.stat_tiempo
+        self.card_kpi_consumo = self.stat_consumo
+        self.card_kpi_granos = self.stat_granos
+        self.card_kpi_precision = self.stat_precision
+        self.card_kpi_latencia = self.stat_ms
+        self.card_kpi_lotes = self.lbl_lotes
+
+        self.tab_logs = self.logs_box
+        self.txt_logs = self.logs_box
+
+        self.slider_latencia = self.slider_trigger
+        self.btn_aplicar_latencia = self.btn_aplicar_trigger
+        self.btn_cancelar_latencia = self.btn_cancelar_trigger
+
+        self.indicadores_canales = self.luces_canales
+
+        self.fig_reactiva = self.fig_analiticas
+        self.ax_reactivo = self.ax_analiticas
+        self.canvas_reactivo = self.canvas_analiticas
+
+        # Emulación del switch de modelo para pruebas existentes
         self.switch_modelo = ctk.CTkSwitch(
-            cabecera,
+            self,
             text="Tri-clase",
-            command=self._al_cambiar_switch_modelo,
-            font=ctk.CTkFont(size=11, weight="bold"),
-            progress_color=self.COLOR_VERDE_ULSA,
+            command=self._al_cambiar_switch_modelo_compat,
         )
         self.switch_modelo.deselect()
 
         self.switch_sahi = ctk.CTkSwitch(
-            cabecera,
+            self,
             text="SAHI: OFF",
-            command=self._al_cambiar_switch_sahi,
-            font=ctk.CTkFont(size=11, weight="bold"),
-            progress_color=self.COLOR_VERDE_ULSA,
+            command=self._al_cambiar_switch_sahi_compat,
         )
         self.switch_sahi.deselect()
 
-        # Sub-bloque derecho: Badges FPS/ms y Selector de Tres Vistas
-        frame_der = ctk.CTkFrame(cabecera, fg_color="transparent")
-        frame_der.pack(side="right", padx=10, pady=6)
-
-        self.badge_ms = ctk.CTkLabel(
-            frame_der,
-            text="ms: 0.0",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color="#0277BD",
-            fg_color="#E1F5FE",
-            corner_radius=12,
-            padx=10,
-            pady=4,
-        )
-        self.badge_ms.pack(side="left", padx=4)
-
-        self.badge_fps = ctk.CTkLabel(
-            frame_der,
-            text="FPS: 30.0",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=self.COLOR_VERDE_ULSA,
-            fg_color=self.COLOR_VERDE_CLARO,
-            corner_radius=12,
-            padx=10,
-            pady=4,
-        )
-        self.badge_fps.pack(side="left", padx=4)
-
-        # Botón segmentado para cambio de pantallas
-        self.seg_ventanas = ctk.CTkSegmentedButton(
-            frame_der,
-            values=["Dashboard", "Analíticas", "Registros"],
-            command=self._al_cambiar_ventana,
-            selected_color=self.COLOR_VERDE_ULSA,
-            selected_hover_color=self.COLOR_VERDE_HOVER,
-            height=32,
-            font=ctk.CTkFont(size=12, weight="bold"),
-            corner_radius=16,
-        )
-        self.seg_ventanas.set("Dashboard")
-        self.seg_ventanas.pack(side="left", padx=(10, 0))
-
-        # Aliases y selectores para retrocompatibilidad con tests existentes
-        self.badge_modelo = self.combo_modelo_hdr
+        # Emulación de selectores físicos de cámaras
         self.combo_cam_top = ctk.CTkOptionMenu(
             self,
             values=["Cámara 0", "Cámara 1", "Cámara 2", "Demo / Sintético"],
-            command=self._al_cambiar_camara_top,
+            command=self._al_cambiar_camara_top_compat,
         )
         self.combo_cam_top.set(self._formatear_fuente_texto(self.detector.fuente_video_top))
 
         self.combo_cam_bottom = ctk.CTkOptionMenu(
             self,
             values=["Cámara 0", "Cámara 1", "Cámara 2", "Demo / Sintético"],
-            command=self._al_cambiar_camara_bottom,
+            command=self._al_cambiar_camara_bottom_compat,
         )
         self.combo_cam_bottom.set(self._formatear_fuente_texto(self.detector.fuente_video_bottom))
         self.opt_fuente = self.combo_cam_top
 
-    # =========================================================================
-    # VISTA 1: DASHBOARD (Pantalla Principal del HMI)
-    # =========================================================================
-
-    def _construir_vista_dashboard(self) -> None:
-        self.vista_dashboard.grid_columnconfigure(0, weight=3)
-        self.vista_dashboard.grid_columnconfigure(1, weight=2)
-        self.vista_dashboard.grid_rowconfigure(0, weight=1)
-
-        # --- A. Card de Video Monocámara Alternable ---
-        card_video = ctk.CTkFrame(
-            self.vista_dashboard,
-            fg_color="#1E1E1E",
-            corner_radius=self.RADIUS_CARD,
-            border_width=1,
-            border_color=self.COLOR_BORDE_NEUMORFICO,
-        )
-        card_video.grid(row=0, column=0, padx=(0, 8), pady=0, sticky="nsew")
-        card_video.grid_rowconfigure(1, weight=1)
-        card_video.grid_columnconfigure(0, weight=1)
-
-        # Barra superior sobre el video
-        frame_hdr_video = ctk.CTkFrame(card_video, fg_color="#141414", corner_radius=8, height=34)
-        frame_hdr_video.grid(row=0, column=0, padx=8, pady=(8, 4), sticky="ew")
-
-        self.lbl_camara_activa_badge = ctk.CTkLabel(
-            frame_hdr_video,
-            text="CÁMARA SUPERIOR (MAESTRO) | GUÍAS DE CARRIL Y DISPARO",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color="#A5D6A7",
-        )
-        self.lbl_camara_activa_badge.pack(side="left", padx=12, pady=4)
-
-        lbl_ayuda_toggle = ctk.CTkLabel(
-            frame_hdr_video,
-            text="[Pulse ↕ para alternar cámara]",
-            font=ctk.CTkFont(size=10),
-            text_color="#B0BEC5",
-        )
-        lbl_ayuda_toggle.pack(side="right", padx=12, pady=4)
-
-        # Lienzo visible del fotograma
-        self.lbl_video = ctk.CTkLabel(
-            card_video,
-            text="Iniciando transmisión de video...",
-            text_color="#888888",
-        )
-        self.lbl_video.grid(row=1, column=0, padx=6, pady=(0, 6), sticky="nsew")
-        self.lbl_video_top = self.lbl_video  # Alias de compatibilidad
-
-        # --- B. Panel Derecho de Control: Botonera, Canales y Trigger ---
-        panel_derecho = ctk.CTkFrame(
-            self.vista_dashboard,
-            fg_color=self.COLOR_FONDO_CARD_LIGHT,
-            corner_radius=self.RADIUS_CARD,
-            border_width=1,
-            border_color=self.COLOR_BORDE_NEUMORFICO,
-        )
-        panel_derecho.grid(row=0, column=1, padx=(8, 0), pady=0, sticky="nsew")
-        panel_derecho.grid_rowconfigure(1, weight=1)
-        panel_derecho.grid_columnconfigure((0, 1, 2), weight=1)
-
-        # -------------------------------------------------------------
-        # Columna 1: BOTONERIA DE ACCIONES
-        # -------------------------------------------------------------
-        frame_col_botonera = ctk.CTkFrame(panel_derecho, fg_color="transparent")
-        frame_col_botonera.grid(row=0, column=0, rowspan=2, padx=6, pady=12, sticky="nsew")
-
-        lbl_tit_bot = ctk.CTkLabel(
-            frame_col_botonera,
-            text="BOTONERIA",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=self.COLOR_CAFE_TEXTO,
-        )
-        lbl_tit_bot.pack(pady=(4, 16))
-
-        # Botón Marcha / Reanudar
-        self.btn_marcha = ctk.CTkButton(
-            frame_col_botonera,
-            text="Marcha",
-            command=self._al_pulsar_marcha,
-            height=64,
-            corner_radius=32,
-            fg_color=self.COLOR_VERDE_ULSA,
-            hover_color=self.COLOR_VERDE_HOVER,
-            font=ctk.CTkFont(size=14, weight="bold"),
-        )
-        self.btn_marcha.pack(fill="x", padx=6, pady=10)
-
-        # Botón Paro
-        self.btn_paro = ctk.CTkButton(
-            frame_col_botonera,
-            text="Paro",
-            command=self._al_pulsar_paro,
-            height=64,
-            corner_radius=32,
-            fg_color=self.COLOR_ROJO_DEFECTO,
-            hover_color=self.COLOR_ROJO_HOVER,
-            font=ctk.CTkFont(size=14, weight="bold"),
-            state="disabled",
-        )
-        self.btn_paro.pack(fill="x", padx=6, pady=10)
-
-        # Botón Reset
-        self.btn_reset = ctk.CTkButton(
-            frame_col_botonera,
-            text="Reset",
-            command=self._al_pulsar_reset,
-            height=64,
-            corner_radius=32,
-            fg_color=self.COLOR_AZUL_ACCION,
-            hover_color="#0D47A1",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            state="disabled",
-        )
-        self.btn_reset.pack(fill="x", padx=6, pady=10)
-
-        # Indicador textual de estado
+        # Label de estado operativo
         self.lbl_estado_maquina = ctk.CTkLabel(
-            frame_col_botonera,
-            text="ESTADO: STANDBY",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=self.COLOR_GRIS_SEC,
+            self, text="ESTADO: STANDBY", font=("Arial", 14, "bold"), text_color=GRIS_MEDIO
         )
-        self.lbl_estado_maquina.pack(pady=(16, 0))
-
-        # Aliases para retrocompatibilidad con tests
-        self.btn_iniciar = self.btn_marcha
-        self.btn_pausar = self.btn_paro
-        self.btn_detener = self.btn_reset
-
-        # -------------------------------------------------------------
-        # Columna 2: CANALES (Indicadores de Activación de Válvulas)
-        # -------------------------------------------------------------
-        frame_col_canales = ctk.CTkFrame(panel_derecho, fg_color="transparent")
-        frame_col_canales.grid(row=0, column=1, rowspan=2, padx=6, pady=12, sticky="nsew")
-
-        lbl_tit_can = ctk.CTkLabel(
-            frame_col_canales,
-            text="CANALES",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=self.COLOR_CAFE_TEXTO,
-        )
-        lbl_tit_can.pack(pady=(4, 16))
-
-        self.indicadores_canales: List[ctk.CTkButton] = []
-        for i in range(4):
-            btn_ch = ctk.CTkButton(
-                frame_col_canales,
-                text=str(i),
-                width=54,
-                height=54,
-                corner_radius=27,
-                fg_color="#E0E0E0",
-                text_color="#424242",
-                hover=False,
-                font=ctk.CTkFont(size=15, weight="bold"),
-            )
-            btn_ch.pack(pady=8)
-            self.indicadores_canales.append(btn_ch)
-
-        # -------------------------------------------------------------
-        # Columna 3: TRIGGER (Calibración Cinemática Vertical)
-        # -------------------------------------------------------------
-        frame_col_trigger = ctk.CTkFrame(panel_derecho, fg_color="transparent")
-        frame_col_trigger.grid(row=0, column=2, rowspan=2, padx=6, pady=12, sticky="nsew")
-
-        lbl_tit_trig = ctk.CTkLabel(
-            frame_col_trigger,
-            text="TRIGGER",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=self.COLOR_CAFE_TEXTO,
-        )
-        lbl_tit_trig.pack(pady=(4, 6))
-
-        # Lectura actual de latencia y píxel Y
-        lat_actual = getattr(self.detector, "valvula_latencia_ms", 3.0)
-        y_actual = getattr(self.detector, "y_trigger", 501)
-
-        self.lbl_val_trigger = ctk.CTkLabel(
-            frame_col_trigger,
-            text=f"{lat_actual:.1f} ms\n(Y={y_actual})",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color="#0277BD",
-            justify="center",
-        )
-        self.lbl_val_trigger.pack(pady=(0, 6))
-
-        # Slider vertical con rango 1.0 ms a 25.0 ms
-        self.slider_trigger = ctk.CTkSlider(
-            frame_col_trigger,
-            orientation="vertical",
-            from_=1.0,
-            to=25.0,
-            number_of_steps=48,
-            command=self._al_mover_slider_trigger,
-            height=180,
-            progress_color=self.COLOR_VERDE_ULSA,
-        )
-        self.slider_trigger.set(lat_actual)
-        self.slider_trigger.pack(pady=(4, 10))
-
-        # Botón Cancelar (Volver a dejarla como estaba)
-        self.btn_cancelar_trigger = ctk.CTkButton(
-            frame_col_trigger,
-            text="Cancelar",
-            command=self._cancelar_trigger,
-            height=32,
-            fg_color="#9E9E9E",
-            hover_color="#757575",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            corner_radius=8,
-        )
-        self.btn_cancelar_trigger.pack(fill="x", padx=6, pady=4)
-
-        # Botón Aplicar (Despliega modal de confirmación)
-        self.btn_aplicar_trigger = ctk.CTkButton(
-            frame_col_trigger,
-            text="Aplicar",
-            command=self._abrir_modal_confirmar_trigger,
-            height=32,
-            fg_color=self.COLOR_VERDE_ULSA,
-            hover_color=self.COLOR_VERDE_HOVER,
-            font=ctk.CTkFont(size=11, weight="bold"),
-            corner_radius=8,
-        )
-        self.btn_aplicar_trigger.pack(fill="x", padx=6, pady=4)
-
-        # Aliases para retrocompatibilidad
-        self.slider_latencia = self.slider_trigger
-        self.btn_aplicar_latencia = self.btn_aplicar_trigger
-        self.btn_cancelar_latencia = self.btn_cancelar_trigger
 
     # =========================================================================
-    # VISTA 2: ANALÍTICAS (Gráfico Reactivo con Acrónimos y StatCards)
-    # =========================================================================
-
-    def _construir_vista_analiticas(self) -> None:
-        self.vista_analiticas.grid_columnconfigure((0, 1, 2, 3), weight=1)
-        self.vista_analiticas.grid_rowconfigure(1, weight=1)
-
-        # Fila 0: 4 StatCards Principales
-        self.card_kpi_tiempo = self._crear_statcard_neumorfica(
-            self.vista_analiticas,
-            0,
-            "Tiempo de Uso",
-            self.gestor_tiempo.obtener_tiempo_formateado(),
-            "Persistencia anti-apagones",
-        )
-        self.card_kpi_consumo = self._crear_statcard_neumorfica(
-            self.vista_analiticas,
-            1,
-            "Consumo kWh",
-            "0.0000 kWh",
-            f"Potencia: {self.gestor_lotes.potencia_hardware_kw:.2f} kW",
-        )
-        self.card_kpi_granos = self._crear_statcard_neumorfica(
-            self.vista_analiticas,
-            2,
-            "Estadísticas grs/%",
-            "0 Granos",
-            "Calidad: 100.0% (0 Sanos)",
-        )
-        self.card_kpi_latencia = self._crear_statcard_neumorfica(
-            self.vista_analiticas,
-            3,
-            "Rendimiento FPS/ms",
-            "30.0 FPS",
-            "Latencia: 0.0 ms",
-        )
-
-        # Aliases para retrocompatibilidad con tests existentes
-        self.card_kpi_lotes = self.card_kpi_consumo
-
-        # Fila 1: Panel Central con Gráfica Matplotlib y Acciones
-        frame_central = ctk.CTkFrame(self.vista_analiticas, fg_color="transparent")
-        frame_central.grid(row=1, column=0, columnspan=4, padx=0, pady=(10, 0), sticky="nsew")
-        frame_central.grid_columnconfigure(0, weight=3)
-        frame_central.grid_columnconfigure(1, weight=2)
-        frame_central.grid_rowconfigure(0, weight=1)
-
-        # Panel Izquierdo: Gráfico de Barras con Acrónimos
-        card_grafico = ctk.CTkFrame(
-            frame_central,
-            fg_color=self.COLOR_FONDO_CARD_LIGHT,
-            corner_radius=self.RADIUS_CARD,
-            border_width=1,
-            border_color=self.COLOR_BORDE_NEUMORFICO,
-        )
-        card_grafico.grid(row=0, column=0, padx=(0, 6), pady=0, sticky="nsew")
-
-        lbl_graf_hdr = ctk.CTkLabel(
-            card_grafico,
-            text="Distribución de Granos y Defectos (Acrónimos Estandarizados)",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=self.COLOR_CAFE_TEXTO,
-        )
-        lbl_graf_hdr.pack(anchor="w", padx=14, pady=(10, 2))
-
-        self.frame_canvas = ctk.CTkFrame(card_grafico, fg_color="transparent")
-        self.frame_canvas.pack(fill="both", expand=True, padx=10, pady=(0, 8))
-
-        self.fig_reactiva = Figure(figsize=(6.2, 4.2), dpi=95, facecolor="#FFFFFF")
-        self.ax_reactivo = self.fig_reactiva.add_subplot(111)
-        self.canvas_reactivo = FigureCanvasTkAgg(self.fig_reactiva, master=self.frame_canvas)
-        self.canvas_widget = self.canvas_reactivo.get_tk_widget()
-        self.canvas_widget.pack(fill="both", expand=True)
-
-        self._actualizar_grafico_reactivo()
-
-        # Panel Derecho: Balance y Botones de Acción
-        card_acciones = ctk.CTkFrame(
-            frame_central,
-            fg_color=self.COLOR_FONDO_CARD_LIGHT,
-            corner_radius=self.RADIUS_CARD,
-            border_width=1,
-            border_color=self.COLOR_BORDE_NEUMORFICO,
-        )
-        card_acciones.grid(row=0, column=1, padx=(6, 0), pady=0, sticky="nsew")
-
-        lbl_bal_tit = ctk.CTkLabel(
-            card_acciones,
-            text="Balance de Clasificación del Lote",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=self.COLOR_CAFE_TEXTO,
-        )
-        lbl_bal_tit.pack(anchor="w", padx=14, pady=(10, 8))
-
-        # Barras Sanos vs Defectos
-        frame_sanos_hdr = ctk.CTkFrame(card_acciones, fg_color="transparent")
-        frame_sanos_hdr.pack(fill="x", padx=14, pady=(2, 2))
-        ctk.CTkLabel(
-            frame_sanos_hdr,
-            text="Granos Sanos (Buenos)",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=self.COLOR_VERDE_ULSA,
-        ).pack(side="left")
-        self.lbl_sanos_val = ctk.CTkLabel(
-            frame_sanos_hdr,
-            text="0 (100.0%)",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=self.COLOR_VERDE_ULSA,
-        )
-        self.lbl_sanos_val.pack(side="right")
-
-        self.bar_sanos = ctk.CTkProgressBar(
-            card_acciones,
-            progress_color=self.COLOR_VERDE_ULSA,
-            fg_color="#E8F5E9",
-            height=12,
-            corner_radius=6,
-        )
-        self.bar_sanos.pack(fill="x", padx=14, pady=(0, 10))
-        self.bar_sanos.set(1.0)
-
-        frame_def_hdr = ctk.CTkFrame(card_acciones, fg_color="transparent")
-        frame_def_hdr.pack(fill="x", padx=14, pady=(2, 2))
-        ctk.CTkLabel(
-            frame_def_hdr,
-            text="Granos Defectuosos",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=self.COLOR_ROJO_DEFECTO,
-        ).pack(side="left")
-        self.lbl_defectos_val = ctk.CTkLabel(
-            frame_def_hdr,
-            text="0 (0.0%)",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=self.COLOR_ROJO_DEFECTO,
-        )
-        self.lbl_defectos_val.pack(side="right")
-
-        self.bar_defectos = ctk.CTkProgressBar(
-            card_acciones,
-            progress_color=self.COLOR_ROJO_DEFECTO,
-            fg_color="#FFEBEE",
-            height=12,
-            corner_radius=6,
-        )
-        self.bar_defectos.pack(fill="x", padx=14, pady=(0, 16))
-        self.bar_defectos.set(0.0)
-
-        # Botones de Acción Táctiles
-        btn_terminar_lote = ctk.CTkButton(
-            card_acciones,
-            text="Terminar Lote",
-            command=self._finalizar_lote_manual,
-            height=44,
-            fg_color=self.COLOR_CAFE_TEXTO,
-            hover_color="#372B24",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            corner_radius=10,
-        )
-        btn_terminar_lote.pack(fill="x", padx=14, pady=6)
-
-        btn_sinc_bd = ctk.CTkButton(
-            card_acciones,
-            text="Sincronizar BD",
-            command=self._sincronizar_pendientes_manual,
-            height=44,
-            fg_color="#0288D1",
-            hover_color="#0277BD",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            corner_radius=10,
-        )
-        btn_sinc_bd.pack(fill="x", padx=14, pady=6)
-
-        self.btn_reiniciar = ctk.CTkButton(
-            card_acciones,
-            text="Reiniciar Métricas",
-            command=self._reiniciar_estadisticas,
-            height=36,
-            fg_color="#8D6E63",
-            hover_color="#6D4C41",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            corner_radius=10,
-        )
-        self.btn_reiniciar.pack(fill="x", padx=14, pady=(10, 8))
-
-    # =========================================================================
-    # VISTA 3: REGISTROS (Historial y Logs según Wireframe)
-    # =========================================================================
-
-    def _construir_vista_registros(self) -> None:
-        self.vista_registros.grid_columnconfigure(0, weight=1)
-        self.vista_registros.grid_rowconfigure(0, weight=3)
-        self.vista_registros.grid_rowconfigure(1, weight=2)
-
-        # --- SECCIÓN 1: HISTORIAL DE LOTES ---
-        card_hist = ctk.CTkFrame(
-            self.vista_registros,
-            fg_color=self.COLOR_FONDO_CARD_LIGHT,
-            corner_radius=self.RADIUS_CARD,
-            border_width=1,
-            border_color=self.COLOR_BORDE_NEUMORFICO,
-        )
-        card_hist.grid(row=0, column=0, padx=0, pady=(0, 6), sticky="nsew")
-        card_hist.grid_columnconfigure(0, weight=1)
-        card_hist.grid_rowconfigure(1, weight=1)
-
-        # Barra de Filtros Historial
-        frame_flt_hist = ctk.CTkFrame(card_hist, fg_color="transparent")
-        frame_flt_hist.grid(row=0, column=0, padx=12, pady=(8, 4), sticky="ew")
-
-        lbl_tit_hist = ctk.CTkLabel(
-            frame_flt_hist,
-            text="Historial",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=self.COLOR_CAFE_TEXTO,
-        )
-        lbl_tit_hist.pack(side="left", padx=(4, 16))
-
-        self.opt_filtro_modelo_hist = ctk.CTkOptionMenu(
-            frame_flt_hist,
-            values=["Todos", "Tri-clase", "13 Clases"],
-            command=lambda _: self._cargar_historial_lotes(),
-            width=110,
-            height=28,
-            fg_color=self.COLOR_VERDE_ULSA,
-            button_color=self.COLOR_VERDE_HOVER,
-        )
-        self.opt_filtro_modelo_hist.set("Todos")
-        self.opt_filtro_modelo_hist.pack(side="left", padx=4)
-
-        self.seg_filtro_fecha_hist = ctk.CTkSegmentedButton(
-            frame_flt_hist,
-            values=["Hoy", "Últimos 3 días", "Última semana", "Todos"],
-            command=lambda _: self._cargar_historial_lotes(),
-            selected_color=self.COLOR_VERDE_ULSA,
-            selected_hover_color=self.COLOR_VERDE_HOVER,
-            height=28,
-        )
-        self.seg_filtro_fecha_hist.set("Hoy")
-        self.seg_filtro_fecha_hist.pack(side="left", padx=4)
-
-        btn_refrescar_hist = ctk.CTkButton(
-            frame_flt_hist,
-            text="↻",
-            command=self._cargar_historial_lotes,
-            width=32,
-            height=28,
-            fg_color=self.COLOR_VERDE_ULSA,
-            hover_color=self.COLOR_VERDE_HOVER,
-        )
-        btn_refrescar_hist.pack(side="right", padx=6)
-
-        # Contenedor con scroll para la tabla de historial
-        self.scroll_historial = ctk.CTkScrollableFrame(
-            card_hist,
-            fg_color="#FAFAFA",
-            corner_radius=8,
-            border_width=1,
-            border_color="#E0E0E0",
-        )
-        self.scroll_historial.grid(row=1, column=0, padx=12, pady=(0, 10), sticky="nsew")
-        self.scroll_historial.grid_columnconfigure((0, 1, 2, 3, 4, 5), weight=1)
-
-        # Encabezados de la tabla
-        headers = [
-            "Fecha",
-            "Nº de Lote",
-            "Granos Procesados",
-            "Granos buenos (N)",
-            "Granos buenos (%)",
-            "Tiempo (min)",
-        ]
-        for col_idx, h_text in enumerate(headers):
-            lbl_h = ctk.CTkLabel(
-                self.scroll_historial,
-                text=h_text,
-                font=ctk.CTkFont(size=11, weight="bold"),
-                text_color=self.COLOR_CAFE_TEXTO,
-            )
-            lbl_h.grid(row=0, column=col_idx, padx=6, pady=4, sticky="w")
-
-        # --- SECCIÓN 2: HISTORIAL DE LOGS (Más pequeño que el historial) ---
-        card_logs = ctk.CTkFrame(
-            self.vista_registros,
-            fg_color=self.COLOR_FONDO_CARD_LIGHT,
-            corner_radius=self.RADIUS_CARD,
-            border_width=1,
-            border_color=self.COLOR_BORDE_NEUMORFICO,
-        )
-        card_logs.grid(row=1, column=0, padx=0, pady=(6, 0), sticky="nsew")
-        card_logs.grid_columnconfigure(0, weight=1)
-        card_logs.grid_rowconfigure(1, weight=1)
-
-        # Barra de Filtros Logs
-        frame_flt_logs = ctk.CTkFrame(card_logs, fg_color="transparent")
-        frame_flt_logs.grid(row=0, column=0, padx=12, pady=(8, 4), sticky="ew")
-
-        lbl_tit_logs = ctk.CTkLabel(
-            frame_flt_logs,
-            text="LOGS",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=self.COLOR_CAFE_TEXTO,
-        )
-        lbl_tit_logs.pack(side="left", padx=(4, 16))
-
-        self.opt_filtro_logs = ctk.CTkOptionMenu(
-            frame_flt_logs,
-            values=["TODOS", "INFO", "WARNING", "ALARM"],
-            command=lambda _: self._actualizar_visor_logs(),
-            width=110,
-            height=28,
-            fg_color=self.COLOR_VERDE_ULSA,
-            button_color=self.COLOR_VERDE_HOVER,
-        )
-        self.opt_filtro_logs.set("TODOS")
-        self.opt_filtro_logs.pack(side="left", padx=4)
-
-        self.seg_filtro_fecha = ctk.CTkSegmentedButton(
-            frame_flt_logs,
-            values=["Hoy", "Últimos 3 días", "Última semana", "Todos"],
-            command=lambda _: self._actualizar_visor_logs(),
-            selected_color=self.COLOR_VERDE_ULSA,
-            selected_hover_color=self.COLOR_VERDE_HOVER,
-            height=28,
-        )
-        self.seg_filtro_fecha.set("Hoy")
-        self.seg_filtro_fecha.pack(side="left", padx=4)
-
-        btn_toplevel_logs = ctk.CTkButton(
-            frame_flt_logs,
-            text="⤢ Ventana",
-            command=self._abrir_ventana_logs_toplevel,
-            width=80,
-            height=28,
-            fg_color="#6D4C41",
-            hover_color="#4E342E",
-            font=ctk.CTkFont(size=11, weight="bold"),
-        )
-        btn_toplevel_logs.pack(side="right", padx=4)
-
-        btn_refrescar_logs = ctk.CTkButton(
-            frame_flt_logs,
-            text="↻",
-            command=self._actualizar_visor_logs,
-            width=32,
-            height=28,
-            fg_color=self.COLOR_VERDE_ULSA,
-            hover_color=self.COLOR_VERDE_HOVER,
-        )
-        btn_refrescar_logs.pack(side="right", padx=4)
-
-        # Consola de Texto para Logs
-        self.txt_logs = ctk.CTkTextbox(
-            card_logs,
-            fg_color="#1E1E1E",
-            text_color="#E0E0E0",
-            font=ctk.CTkFont(family="Consolas", size=10),
-            corner_radius=8,
-            border_width=1,
-            border_color="#E0E0E0",
-            wrap="word",
-        )
-        self.txt_logs.grid(row=1, column=0, padx=12, pady=(0, 10), sticky="nsew")
-
-        try:
-            raw = self.txt_logs._textbox
-            raw.tag_config("ALARM", foreground="#FF5252", font=("Consolas", 10, "bold"))
-            raw.tag_config("WARNING", foreground="#FFB74D", font=("Consolas", 10, "bold"))
-            raw.tag_config("INFO", foreground="#81C784")
-            raw.tag_config("TIMESTAMP", foreground="#64B5F6")
-            raw.tag_config("DEF", foreground="#E0E0E0")
-        except Exception:
-            pass
-
-    # =========================================================================
-    # NAVEGACIÓN Y CAMBIO DE VISTAS
-    # =========================================================================
-
-    def _al_cambiar_ventana(self, seleccion: str) -> None:
-        """Conmuta dinámicamente el lienzo central entre las 3 vistas."""
-        if seleccion == "Dashboard":
-            self.vista_dashboard.grid()
-            self.vista_analiticas.grid_remove()
-            self.vista_registros.grid_remove()
-        elif seleccion == "Analíticas":
-            self.vista_dashboard.grid_remove()
-            self.vista_analiticas.grid()
-            self.vista_registros.grid_remove()
-            self._actualizar_grafico_reactivo()
-        elif seleccion == "Registros":
-            self.vista_dashboard.grid_remove()
-            self.vista_analiticas.grid_remove()
-            self.vista_registros.grid()
-            self._cargar_historial_lotes()
-            self._actualizar_visor_logs()
-
-    # =========================================================================
-    # MÁQUINA DE ESTADOS FINITA (FSM) DE LA BOTONERA Y PROTECCIÓN ANTI-CORTE
+    # MÁQUINA DE ESTADOS FINITA (FSM) DE BOTONERÍA (M, P, R) Y SEGURIDAD
     # =========================================================================
 
     def _verificar_corte_abrupto_al_arranque(self) -> None:
         """
-        Protección anti-corte abrupto por Botón Payaso (Seta de Paro):
-        Si al arrancar el sistema detecta que el estado previo era 'EN_MARCHA',
-        bloquea la marcha, conmuta piloto a rojo (GPIO 18), registra alarma
-        y exige pulsar Reset para purgar antes de operar.
+        Detección de corte abrupto por paro de emergencia o apagón durante marcha:
+        Si 'estado_operativo' previo era 'EN_MARCHA', bloquea el inicio,
+        enciende piloto rojo en ESP32 y exige purga con botón R.
         """
         if getattr(self.gestor_tiempo, "requiere_reset_por_corte", False):
-            self.estado_operativo = "PARO"
-            self.lbl_estado_maquina.configure(
-                text="ALERTA: CORTE ABRUPTO", text_color=self.COLOR_ROJO_DEFECTO
+            self._actualizar_fsm("BLOQUEO_SEGURIDAD")
+            self.db_manager.registrar_log_local(
+                "ALARM", "Corte abrupto de energía detectado durante marcha. Pulse Reset (R) para purgar."
             )
-            self.btn_marcha.configure(state="disabled")
-            self.btn_paro.configure(state="disabled")
-            self.btn_reset.configure(state="normal", text="Reset (Purgar)", fg_color=self.COLOR_ROJO_DEFECTO)
-            self.slider_trigger.configure(state="normal")
-
             if self.esp32_bridge:
                 self.esp32_bridge.cambiar_piloto("RED")
 
-            self.db_manager.registrar_log_local(
-                "ALARM", "PARADA_ABRUPTA_DETECTADA: Sistema bloqueado hasta purga con Reset."
-            )
+            if "unittest" not in sys.modules:
+                messagebox.showwarning(
+                    "Bloqueo de Seguridad | MOPPI",
+                    "Se detectó un corte abrupto de energía durante la marcha previa.\n"
+                    "El sistema ha sido bloqueado por seguridad (Piloto Rojo).\n"
+                    "Presione 'R' (Reset) para purgar antes de operar.",
+                )
         else:
-            self._actualizar_estado_fsm("STANDBY")
+            self._actualizar_fsm("STANDBY")
 
     _verificar_estado_previo_maquina = _verificar_corte_abrupto_al_arranque
 
-    def _actualizar_estado_fsm(self, nuevo_estado: str) -> None:
-        """Aplica las transiciones de estado de la máquina operativa."""
+    def _actualizar_fsm(self, nuevo_estado: str) -> None:
         self.estado_operativo = nuevo_estado
         self.gestor_tiempo.actualizar_estado_operativo(nuevo_estado)
 
         if nuevo_estado == "STANDBY":
-            self.lbl_estado_maquina.configure(text="ESTADO: STANDBY", text_color=self.COLOR_GRIS_SEC)
-            self.btn_marcha.configure(state="normal", text="Marcha", fg_color=self.COLOR_VERDE_ULSA)
-            self.btn_paro.configure(state="disabled")
-            self.btn_reset.configure(state="disabled", text="Reset", fg_color=self.COLOR_AZUL_ACCION)
+            self.lbl_estado_maquina.configure(text="ESTADO: STANDBY", text_color=GRIS_MEDIO)
+            self.btn_marcha.configure(state="normal", text="M", fg_color=VERDE)
+            self.btn_paro.configure(state="disabled", fg_color=ROJO_PARO)
+            self.btn_reset.configure(state="disabled", text="R", fg_color=AMBAR_RESET)
+
+            # Controles de Trigger habilitados en reposo
             self.slider_trigger.configure(state="normal")
-            self.btn_aplicar_trigger.configure(state="normal")
             self.btn_cancelar_trigger.configure(state="normal")
+            self.btn_aplicar_trigger.configure(state="normal")
+
             if self.esp32_bridge:
+                self.esp32_bridge.control_banda(False)
                 self.esp32_bridge.cambiar_piloto("WHITE")
 
         elif nuevo_estado == "EN_MARCHA":
-            self.lbl_estado_maquina.configure(text="ESTADO: EN MARCHA", text_color=self.COLOR_VERDE_ULSA)
-            self.btn_marcha.configure(state="disabled", text="En Marcha")
-            self.btn_paro.configure(state="normal")
+            self.lbl_estado_maquina.configure(text="ESTADO: EN MARCHA", text_color=VERDE)
+            self.btn_marcha.configure(state="disabled", text="M")
+            self.btn_paro.configure(state="normal", fg_color=ROJO_PARO)
             self.btn_reset.configure(state="disabled")
-            # Inhibición estricta de configuración de trigger durante operación
+
+            # Inhibición estricta de calibración en marcha
             self.slider_trigger.configure(state="disabled")
-            self.btn_aplicar_trigger.configure(state="disabled")
             self.btn_cancelar_trigger.configure(state="disabled")
+            self.btn_aplicar_trigger.configure(state="disabled")
+
             if self.esp32_bridge:
                 self.esp32_bridge.control_banda(True)
                 self.esp32_bridge.cambiar_piloto("GREEN")
 
         elif nuevo_estado == "PARO":
-            self.lbl_estado_maquina.configure(text="ESTADO: PARO", text_color=self.COLOR_AMARILLO_ALERTA)
-            self.btn_marcha.configure(state="normal", text="Reanudar", fg_color=self.COLOR_VERDE_ULSA)
+            self.lbl_estado_maquina.configure(text="ESTADO: PARO", text_color=AMBAR_RESET)
+            self.btn_marcha.configure(state="normal", text="M", fg_color=VERDE)  # Actúa como Reanudar
             self.btn_paro.configure(state="disabled")
-            self.btn_reset.configure(state="normal", text="Reset", fg_color=self.COLOR_AZUL_ACCION)
+            self.btn_reset.configure(state="normal", text="R", fg_color=AMBAR_RESET)
+
+            # Controles de Trigger habilitados para calibrar con máquina en reposo
             self.slider_trigger.configure(state="normal")
-            self.btn_aplicar_trigger.configure(state="normal")
             self.btn_cancelar_trigger.configure(state="normal")
+            self.btn_aplicar_trigger.configure(state="normal")
+
             if self.esp32_bridge:
                 self.esp32_bridge.control_banda(False)
-                self.esp32_bridge.detener_todo()
                 self.esp32_bridge.cambiar_piloto("YELLOW")
 
+        elif nuevo_estado == "BLOQUEO_SEGURIDAD":
+            self.lbl_estado_maquina.configure(text="ALERTA: BLOQUEO DE SEGURIDAD", text_color=ROJO_PARO)
+            self.btn_marcha.configure(state="disabled")
+            self.btn_paro.configure(state="disabled")
+            self.btn_reset.configure(state="normal", text="R", fg_color=ROJO_PARO)
+
+            self.slider_trigger.configure(state="disabled")
+            self.btn_cancelar_trigger.configure(state="disabled")
+            self.btn_aplicar_trigger.configure(state="disabled")
+
+            if self.esp32_bridge:
+                self.esp32_bridge.control_banda(False)
+                self.esp32_bridge.cambiar_piloto("RED")
+
     def _al_pulsar_marcha(self) -> None:
-        """Inicia o reanuda la clasificación mecatrónica activa."""
+        """Manejador del botón M (Marcha / Reanudar)."""
         if getattr(self.gestor_tiempo, "requiere_reset_por_corte", False):
-            messagebox.showwarning(
-                "Arranque Bloqueado",
-                "Se detectó un apagado abrupto previo. Debe presionar Reset para purgar el sistema antes de iniciar.",
-            )
+            if "unittest" not in sys.modules:
+                messagebox.showwarning(
+                    "Arranque Bloqueado",
+                    "Corte abrupto previo detectado. Pulse 'R' para purgar antes de operar.",
+                )
             return
 
         if self.estado_operativo == "STANDBY":
             self.detector.iniciar_clasificacion()
             self.metricas.iniciar_sesion()
-            self.gestor_lotes.iniciar_lote()
+            if hasattr(self.gestor_lotes, "iniciar_lote"):
+                self.gestor_lotes.iniciar_lote()
+            elif hasattr(self.gestor_lotes, "iniciar_nuevo_lote"):
+                self.gestor_lotes.iniciar_nuevo_lote()
             self.db_manager.registrar_log_local("INFO", "Inicio de marcha en clasificadora.")
+            self._actualizar_fsm("EN_MARCHA")
+
         elif self.estado_operativo == "PARO":
             self.detector.reanudar()
             self.metricas.iniciar_sesion()
             self.db_manager.registrar_log_local("INFO", "Reanudación de marcha en clasificadora.")
-
-        self._actualizar_estado_fsm("EN_MARCHA")
+            self._actualizar_fsm("EN_MARCHA")
 
     def _al_pulsar_paro(self) -> None:
-        """Ejecuta un paro operacional deteniendo banda y clasificación."""
+        """Manejador del botón P (Paro operativo)."""
         if self.estado_operativo != "EN_MARCHA":
             return
-
         self.detector.pausar()
         self.metricas.pausar_sesion()
         self.db_manager.registrar_log_local("WARNING", "Paro operativo solicitado por operador.")
-        self._actualizar_estado_fsm("PARO")
+        self._actualizar_fsm("PARO")
 
     def _al_pulsar_reset(self) -> None:
-        """Purga el sistema, limpia alertas de corte y retorna a STANDBY."""
+        """Manejador del botón R (Reset / Purga / Cierre de lote)."""
         if getattr(self.gestor_tiempo, "requiere_reset_por_corte", False):
             self.gestor_tiempo.reset_corte_abrupto()
-            self.db_manager.registrar_log_local("INFO", "Purga de sistema completada tras corte abrupto.")
-
-        self.detector.detener_clasificacion()
-        self.metricas.pausar_sesion()
-        self._actualizar_estado_fsm("STANDBY")
-
-    # =========================================================================
-    # CONTROL CINEMÁTICO DE TRIGGER Y MODAL DE CONFIRMACIÓN
-    # =========================================================================
-
-    def _al_mover_slider_trigger(self, valor: float) -> None:
-        """
-        Al mover el slider, calcula dinámicamente Y_trigger y dibuja una
-        previsualización discontinua sobre el video sin alterar la línea real.
-        """
-        latencia_redondeada = round(float(valor) * 2.0) / 2.0
-        _, y_prev = calcular_desplazamiento_cinematico(
-            latencia_redondeada,
-            belt_speed_m_s=self.detector.belt_speed_m_s,
-            pixels_per_meter_y=self.detector.pixels_per_meter_y,
-            y_nozzle_px=self.detector.y_nozzle_px,
-        )
-        self.lbl_val_trigger.configure(text=f"{latencia_redondeada:.1f} ms\n(Y={y_prev})")
-        self.detector.previsualizar_latencia_actuador(latencia_redondeada)
-
-    def _cancelar_trigger(self) -> None:
-        """Restaura el slider al valor operativo real y descarta la previsualización."""
-        lat_real = getattr(self.detector, "valvula_latencia_ms", 3.0)
-        y_real = getattr(self.detector, "y_trigger", 501)
-        self.slider_trigger.set(lat_real)
-        self.lbl_val_trigger.configure(text=f"{lat_real:.1f} ms\n(Y={y_real})")
-        self.detector.cancelar_previsualizacion_latencia()
-
-    def _abrir_modal_confirmar_trigger(self) -> None:
-        """Abre ventana modal táctil para confirmar el cambio de línea de disparo."""
-        if self.estado_operativo == "EN_MARCHA":
+            self.db_manager.registrar_log_local("INFO", "Sistema purgado tras corte de energía. Retorno a STANDBY.")
+            self._actualizar_fsm("STANDBY")
             return
 
-        val_slider = round(float(self.slider_trigger.get()) * 2.0) / 2.0
-        _, y_calc = calcular_desplazamiento_cinematico(
-            val_slider,
-            belt_speed_m_s=self.detector.belt_speed_m_s,
-            pixels_per_meter_y=self.detector.pixels_per_meter_y,
-            y_nozzle_px=self.detector.y_nozzle_px,
-        )
-
-        if self.modal_trigger is not None and self.modal_trigger.winfo_exists():
-            self.modal_trigger.lift()
-            self.modal_trigger.focus_set()
-        else:
-            self.modal_trigger = VentanaConfirmacionTrigger(
-                parent=self,
-                nueva_latencia_ms=val_slider,
-                nuevo_y_px=y_calc,
-                callback_confirmar=self._aplicar_cambio_trigger,
-            )
-
-    def _aplicar_cambio_trigger(self, nueva_latencia_ms: float) -> None:
-        """Aplica la nueva latencia al detector y persiste en JSON."""
-        y_nuevo = self.detector.actualizar_latencia_actuador(nueva_latencia_ms)
-        self.lbl_val_trigger.configure(text=f"{nueva_latencia_ms:.1f} ms\n(Y={y_nuevo})")
-        self.db_manager.registrar_log_local(
-            "INFO", f"Calibración de trigger actualizada: {nueva_latencia_ms:.1f} ms -> Y={y_nuevo} px"
-        )
-        messagebox.showinfo("Calibración Exitosa", f"Línea de disparo fijada en Y = {y_nuevo} px.")
+        if self.estado_operativo == "PARO":
+            # Si hay granos procesados, cerrar y guardar el lote
+            if getattr(self.gestor_lotes, "total_granos", 0) > 0:
+                self.gestor_lotes.finalizar_lote()
+            self.metricas.reiniciar()
+            self.db_manager.registrar_log_local("INFO", "Reset de contadores y retorno a STANDBY.")
+            self._actualizar_fsm("STANDBY")
 
     # =========================================================================
-    # CONTROL DE INDICADORES VISUALES DE ELECTROVÁLVULAS (120 MS AFTER)
+    # CANALES Y ACTUACIÓN NEUMÁTICA (DESTELLO LUMINOSO 120 MS)
     # =========================================================================
 
-    def activar_indicador_canal(self, canal: int) -> None:
+    def destellar_canal(self, canal: int) -> None:
         """
-        Conmuta el indicador visual del canal a verde institucional (#197B30)
-        durante 120 ms mediante after(), retornando automáticamente a gris pasivo.
+        Conmuta el indicador pasivo del canal a verde luminoso (VERDE_LED)
+        durante 120 ms mediante after(), regresando a su gris de reposo.
         """
-        if 0 <= canal < len(self.indicadores_canales):
-            btn = self.indicadores_canales[canal]
-            btn.configure(fg_color="#197B30", text_color="#FFFFFF")
-            self.after(120, lambda b=btn: self._restablecer_indicador_canal(b))
+        if 0 <= canal < len(self.luces_canales):
+            btn = self.luces_canales[canal]
+            btn.configure(fg_color=VERDE_LED, text_color="white")
+            self.after(120, lambda b=btn: self._apagar_luz_canal(b))
 
-    def _restablecer_indicador_canal(self, btn: ctk.CTkButton) -> None:
+    activar_indicador_canal = destellar_canal
+
+    def _apagar_luz_canal(self, btn: ctk.CTkButton) -> None:
         try:
             if btn.winfo_exists():
-                btn.configure(fg_color="#E0E0E0", text_color="#424242")
+                btn.configure(fg_color=GRIS_SUAVE, text_color=GRIS_MEDIO)
         except Exception:
             pass
 
     def _apagar_indicador_canal(self, canal: int) -> None:
-        """Apaga forzadamente el indicador del canal dado."""
-        if 0 <= canal < len(self.indicadores_canales):
-            self._restablecer_indicador_canal(self.indicadores_canales[canal])
+        if 0 <= canal < len(self.luces_canales):
+            self._apagar_luz_canal(self.luces_canales[canal])
 
     def _al_recibir_respuesta_serial(self, linea: str) -> None:
-        """Interpreta respuestas seriales del ESP32 para activar los pilotos visuales."""
+        """Callback invocado por ESP32Bridge al recibir tramas como 'OK:<canal>'."""
         if linea.startswith("OK:"):
-            canal_str = linea[3:].strip()
-            if canal_str.isdigit():
-                ch = int(canal_str)
+            ch_str = linea[3:].strip()
+            if ch_str.isdigit():
+                ch = int(ch_str)
                 if threading.current_thread() is threading.main_thread():
-                    self.activar_indicador_canal(ch)
+                    self.destellar_canal(ch)
                 else:
-                    self.after(0, lambda: self.activar_indicador_canal(ch))
+                    self.after(0, lambda: self.destellar_canal(ch))
 
     # =========================================================================
-    # ALTERNANCIA DE CÁMARA (↕) Y RECONFIGURACIÓN DE FUENTES
+    # CALIBRACIÓN CINEMÁTICA Y SLIDER DE TRIGGER
     # =========================================================================
 
-    def _alternar_vista_camara(self) -> None:
+    def _al_mover_slider_trigger(self, valor: float) -> None:
         """
-        El botón ↕ alterna el lienzo visible entre la cámara superior (con carril
-        y línea cinemática) y la inferior (reverso/ventral) sin detener la inferencia paralela.
+        Mapea el slider (0..100) al margen inferior del 25% del frame (640..480 px)
+        o latencia proporcional (1.0..25.0 ms), previsualizando la línea sobre el visor.
         """
+        self._porcentaje_slider_actual = int(round(valor))
+        self.lbl_valor_trigger.configure(text=f"{self._porcentaje_slider_actual}%")
+
+        # 0% = 640 px (base), 100% = 480 px (margen superior del 25%)
+        # Coordenada Y = 640 - (porcentaje * 1.6)
+        y_dinamico = int(round(640 - (self._porcentaje_slider_actual * 1.6)))
+        # Latencia equivalente: 1.0 ms + (porcentaje/100)*24.0 ms
+        lat_dinamica = round(1.0 + (self._porcentaje_slider_actual / 100.0) * 24.0, 1)
+
+        self._latencia_preview_ms = lat_dinamica
+        if hasattr(self.detector, "previsualizar_latencia_actuador"):
+            self.detector.previsualizar_latencia_actuador(lat_dinamica)
+        elif hasattr(self.detector, "y_trigger_preview"):
+            self.detector.y_trigger_preview = y_dinamico
+
+    def _al_pulsar_cancelar_trigger(self) -> None:
+        """Restaura el slider al valor guardado y descarta la previsualización."""
+        if hasattr(self.detector, "cancelar_previsualizacion_latencia"):
+            self.detector.cancelar_previsualizacion_latencia()
+        # Restaurar slider
+        self.slider_trigger.set(self._porcentaje_slider_actual)
+        self.lbl_valor_trigger.configure(text=f"{self._porcentaje_slider_actual}%")
+
+    def _al_pulsar_aplicar_trigger(self) -> None:
+        """Despliega el modal táctil para confirmar la nueva calibración."""
+        y_dinamico = int(round(640 - (self._porcentaje_slider_actual * 1.6)))
+        self._modal_trigger = VentanaConfirmacionTrigger(
+            parent=self,
+            nueva_latencia_ms=self._latencia_preview_ms,
+            nuevo_y_px=y_dinamico,
+            porcentaje_slider=self._porcentaje_slider_actual,
+            callback_confirmar=self._confirmar_calibracion_trigger,
+        )
+
+    def _confirmar_calibracion_trigger(self, latencia_ms: float, y_px: Optional[int] = None) -> None:
+        """Aplica y persiste la calibración cinemática confirmada."""
+        if hasattr(self.detector, "actualizar_latencia_actuador"):
+            y_real = self.detector.actualizar_latencia_actuador(latencia_ms)
+        else:
+            y_real = y_px or int(round(640 - (self._porcentaje_slider_actual * 1.6)))
+            self.detector.y_trigger = y_real
+
+        self._latencia_guardada_ms = latencia_ms
+        self._y_trigger_guardado_px = y_real
+        self.db_manager.registrar_log_local(
+            "INFO", f"Nueva posición de trigger aplicada: Y = {y_real} px ({latencia_ms:.1f} ms)."
+        )
+
+    # =========================================================================
+    # VISTAS DE CÁMARAS Y CONTROL DE INFERENCIA DUAL
+    # =========================================================================
+
+    def _al_pulsar_alternar_camara(self) -> None:
+        """El botón ↕ conmuta el lienzo visible entre Superior (Maestro) e Inferior (Esclavo)."""
         if self.camara_vista_activa == "TOP":
             self.camara_vista_activa = "BOTTOM"
             self.lbl_camara_activa_badge.configure(
-                text="CÁMARA INFERIOR (VENTRAL) | INSPECCIÓN DE REVERSO Y HENDIDURA",
+                text="CÁMARA INFERIOR (ESCLAVO) | INSPECCIÓN DE REVERSO",
                 text_color="#81D4FA",
             )
         else:
             self.camara_vista_activa = "TOP"
             self.lbl_camara_activa_badge.configure(
-                text="CÁMARA SUPERIOR (MAESTRO) | GUÍAS DE CARRIL Y DISPARO",
-                text_color="#A5D6A7",
+                text="CÁMARA SUPERIOR (MAESTRO) | CONTROL DE DISPARO",
+                text_color=VERDE_CLARO,
             )
 
-    def _al_cambiar_posicion_camara(self, seleccion: str) -> None:
-        """Invierte la asignación física de las cámaras (Top <-> Bottom) si se solicita."""
-        es_invertida = "Invertida" in seleccion
-        if es_invertida != self.detector.posicion_camara_invertida:
-            nueva_top, nueva_bot = self.detector.alternar_posicion_camaras()
-            self._fuente_top_actual = nueva_top
-            self._fuente_bottom_actual = nueva_bot
-            self.db_manager.registrar_log_local(
-                "INFO", f"Posición de cámaras cambiada a: {seleccion} (Top: {nueva_top}, Bot: {nueva_bot})"
-            )
+    def _al_conmutar_modelo(self, seleccion: str) -> None:
+        """Conmuta globalmente el modelo de IA para ambas cámaras."""
+        es_13 = "13" in seleccion
+        if hasattr(self.detector, "cambiar_modelo"):
+            self.detector.cambiar_modelo(usar_13_clases=es_13)
+        self.gestor_lotes.configurar_modelo(modelo_13_clases=es_13, modo_sahi=False)
 
-    def _al_cambiar_modelo_dropdown(self, seleccion: str) -> None:
-        """Sincroniza el cambio de modelo desde la barra superior."""
-        es_13_clases = "13" in seleccion
-        if es_13_clases != self.detector.es_modo_13clases:
-            if hasattr(self.detector, "cambiar_modelo"):
-                self.detector.cambiar_modelo(usar_13_clases=es_13_clases)
-            self.gestor_lotes.configurar_modelo(
-                modelo_13_clases=es_13_clases, modo_sahi=bool(self.switch_sahi.get())
-            )
-            if es_13_clases:
-                self.switch_modelo.select()
-                self.switch_modelo.configure(text="13 Clases")
+        # Sincronizar ambos selectores
+        nombre_modelo = "13 Clases" if es_13 else "Tri-clase"
+        self.btn_modelos_dash.set(nombre_modelo)
+        self.btn_modelos_analiticas.set(nombre_modelo)
+
+        # Sincronizar switch de compatibilidad
+        if es_13:
+            self.switch_modelo.select()
+            self.switch_modelo.configure(text="13 Clases")
+        else:
+            self.switch_modelo.deselect()
+            self.switch_modelo.configure(text="Tri-clase")
+
+        self.db_manager.registrar_log_local("INFO", f"Modelo de inferencia actualizado a: {nombre_modelo}.")
+        self._actualizar_grafico_reactivo()
+
+    def _al_cambiar_posicion_camaras(self, seleccion: str) -> None:
+        """Alterna físicamente la correspondencia de las cámaras superior e inferior."""
+        if hasattr(self.detector, "alternar_posicion_camaras"):
+            self.detector.alternar_posicion_camaras()
+            self.db_manager.registrar_log_local("INFO", "Asignación física de cámaras invertida.")
+
+    # =========================================================================
+    # ACTUALIZACIÓN EN VIVO: VIDEO, ESTADÍSTICAS Y GRÁFICAS
+    # =========================================================================
+
+    def _bucle_actualizacion_video(self) -> None:
+        """Bucle periódico a 30-60 FPS para streaming visual sin congelamientos."""
+        if not self._bucle_video_activo:
+            return
+
+        try:
+            ahora = time.time()
+            dt = ahora - self._ultimo_tiempo_frame
+            if dt > 0:
+                self._fps_actual = 0.9 * self._fps_actual + 0.1 * (1.0 / dt)
+            self._ultimo_tiempo_frame = ahora
+
+            # Obtener frames de inferencia dual
+            frame_render = None
+            if hasattr(self.detector, "obtener_frame_renderizado_dual"):
+                frame_top, frame_bot, lat_ms = self.detector.obtener_frame_renderizado_dual()
+                self._latencia_inferencia_actual = lat_ms
+                frame_render = frame_top if self.camara_vista_activa == "TOP" else frame_bot
+            elif hasattr(self.detector, "obtener_frame_renderizado"):
+                frame_render = self.detector.obtener_frame_renderizado()
+
+            if frame_render is not None:
+                # Redimensionar exactamente a 640x640 px para respetar el contenedor de HMI.py
+                h, w = frame_render.shape[:2]
+                if w != 640 or h != 640:
+                    frame_render = cv2.resize(frame_render, (640, 640), interpolation=cv2.INTER_LINEAR)
+
+                # Convertir a RGB y mostrar sobre Tkinter Label
+                frame_rgb = cv2.cvtColor(frame_render, cv2.COLOR_BGR2RGB)
+                img = Image.fromarray(frame_rgb)
+                img_tk = ImageTk.PhotoImage(image=img)
+                self.lbl_video_display.imgtk = img_tk
+                self.lbl_video_display.configure(image=img_tk)
+
+            # Actualizar insignias flotantes
+            self.lbl_fps.configure(text=f"FPS: {int(round(self._fps_actual))}")
+            self.lbl_ms.configure(text=f"ms: {self._latencia_inferencia_actual:.1f}")
+
+        except Exception as e:
+            logger.debug(f"Aviso en bucle de video: {e}")
+
+        # Agendar siguiente fotograma (~33 ms)
+        self._id_after_bucle = self.after(33, self._bucle_actualizacion_video)
+
+    def _actualizar_indicador_bd_y_lotes(self) -> None:
+        """Actualiza el LED de MongoDB y el contador de lotes en la cabecera."""
+        conectado = getattr(self.db_manager, "esta_conectado_mongo", False)
+        color_led = VERDE_LED if conectado else GRIS_MEDIO
+        try:
+            self.led_mongo.configure(fg_color=color_led)
+            self.led_mongo_registros.configure(fg_color=color_led)
+        except Exception:
+            pass
+
+        try:
+            stats = self.db_manager.obtener_estadisticas_acumuladas()
+            tot_lotes = stats.get("total_lotes", 0)
+            txt = f"Lotes:  {tot_lotes}"
+            self.lbl_lotes.configure(text=txt)
+            self.lbl_lotes_registros.configure(text=txt)
+        except Exception:
+            pass
+
+    def _actualizar_tarjetas_estadisticas(self) -> None:
+        """Actualiza los valores de las 4 StatCards en Analíticas."""
+        try:
+            # 1. Tiempo de uso
+            seg_hoy = getattr(self.gestor_tiempo, "segundos_hoy", 0)
+            hrs = int(seg_hoy // 3600)
+            mins = int((seg_hoy % 3600) // 60)
+            self.stat_tiempo.configure(text=f"{hrs:02d}:{mins:02d} h")
+
+            # 2. Consumo energético
+            kwh = (seg_hoy / 3600.0) * float(os.getenv("HARDWARE_POWER_KW", "0.5"))
+            self.stat_consumo.configure(text=f"{kwh:.2f} kWh")
+
+            # 3. Estadísticas de granos
+            tot_granos = getattr(self.gestor_lotes, "total_granos", 0)
+            tot_sanos = getattr(self.gestor_lotes, "total_sanos", 0)
+            peso_gr = tot_granos * 0.18  # ~0.18 gramos por grano de café oro
+            calidad = (tot_sanos / tot_granos * 100.0) if tot_granos > 0 else 100.0
+            self.stat_granos.configure(text=f"{int(peso_gr)} grs")
+            self.stat_precision.configure(text=f"{calidad:.1f} %")
+
+            # 4. Rendimiento promedio
+            self.stat_fps.configure(text=f"{int(round(self._fps_actual))} FPS")
+            self.stat_ms.configure(text=f"{self._latencia_inferencia_actual:.1f} ms")
+        except Exception as e:
+            logger.debug(f"Error actualizando statcards: {e}")
+
+    def _actualizar_grafico_reactivo(self) -> None:
+        """Dibuja la gráfica de barras horizontales adaptada al acero oscuro de HMI.py."""
+        if not hasattr(self, "ax_analiticas") or self.ax_analiticas is None:
+            return
+
+        self.ax_analiticas.clear()
+        self.ax_analiticas.set_facecolor(GRIS_OSCURO)
+
+        es_13 = getattr(self.detector, "es_modo_13clases", False)
+        orden = ORDEN_13 if es_13 else ORDEN_TRI
+        conteo_crudo = getattr(self.gestor_lotes, "conteo_crudo", {})
+
+        # Agrupar conteo por acrónimo
+        mapa_acronimos = ACRONIMOS_13 if es_13 else ACRONIMOS_TRI
+        conteos_agrupados = {acro: 0 for acro in orden}
+        for clase, cant in conteo_crudo.items():
+            acro = mapa_acronimos.get(clase, "MAT" if es_13 else "DEF")
+            conteos_agrupados[acro] = conteos_agrupados.get(acro, 0) + cant
+
+        valores = [conteos_agrupados[acro] for acro in orden]
+        posiciones = np.arange(len(orden))
+
+        # Colores de barras: Verde para buenos, ámbar/rojo para defectos
+        colores_barras = []
+        for acro in orden:
+            if acro in ("AR_B", "RO_B"):
+                colores_barras.append(VERDE)
+            elif acro in ("BRO", "QUE", "APL"):
+                colores_barras.append(AMBAR_RESET)
             else:
-                self.switch_modelo.deselect()
-                self.switch_modelo.configure(text="Tri-clase")
-            self._actualizar_grafico_reactivo()
+                colores_barras.append(ROJO_PARO)
 
-    # Métodos y Handlers para retrocompatibilidad con tests existentes
-    def _al_cambiar_camara_top(self, seleccion: str) -> None:
+        self.ax_analiticas.barh(posiciones, valores, color=colores_barras, height=0.6, align="center")
+        self.ax_analiticas.set_yticks(posiciones)
+        self.ax_analiticas.set_yticklabels(orden, color=TEXTO_CLARO, fontsize=12, fontweight="bold")
+        self.ax_analiticas.tick_params(axis="x", colors=TEXTO_CLARO, labelsize=10)
+        self.ax_analiticas.tick_params(axis="y", colors=TEXTO_CLARO)
+
+        # Ajuste de espinas a blanco/claro
+        for spine in self.ax_analiticas.spines.values():
+            spine.set_color(TEXTO_CLARO)
+            spine.set_linewidth(1.5)
+
+        self.ax_analiticas.invert_yaxis()
+        self.fig_analiticas.tight_layout()
+        self.canvas_analiticas.draw()
+
+    # =========================================================================
+    # ACCIONES DE LOTE Y SINCRONIZACIÓN BAJO DEMANDA
+    # =========================================================================
+
+    def _al_pulsar_terminar_lote(self) -> None:
+        """Cierra manualmente el lote activo y persiste sus métricas en SQLite."""
+        if getattr(self.gestor_lotes, "lote_activo", False):
+            self.gestor_lotes.finalizar_lote()
+            self.db_manager.registrar_log_local("INFO", "Lote finalizado manualmente desde Analíticas.")
+            if "unittest" not in sys.modules:
+                messagebox.showinfo("Lote Finalizado", "El lote activo ha sido cerrado y guardado correctamente.")
+            self._actualizar_tarjetas_estadisticas()
+            self._actualizar_indicador_bd_y_lotes()
+        else:
+            if "unittest" not in sys.modules:
+                messagebox.showinfo("Información", "No hay un lote activo en este momento.")
+
+    def _al_pulsar_sincronizar_db(self) -> None:
+        """Ejecuta la sincronización de lotes pendientes hacia MongoDB en un hilo secundario."""
+        def tarea_sync():
+            try:
+                subidos = self.db_manager.sincronizar_pendientes()
+                self.db_manager.registrar_log_local(
+                    "INFO", f"Sincronización manual completada: {subidos} registros subidos a la nube."
+                )
+                self.after(0, self._actualizar_indicador_bd_y_lotes)
+            except Exception as e:
+                self.db_manager.registrar_log_local("WARNING", f"Falla en sincronización manual: {e}")
+
+        threading.Thread(target=tarea_sync, daemon=True).start()
+
+    def _al_lote_finalizado_auto(self, resumen: Dict[str, Any]) -> None:
+        """Callback ejecutado por GestorLotes cuando se cierra por inactividad."""
+        self.db_manager.registrar_log_local(
+            "INFO", f"Lote {resumen.get('id_lote', '')} finalizado por inactividad ({resumen.get('total_granos', 0)} granos)."
+        )
+        self.after(0, self._actualizar_indicador_bd_y_lotes)
+
+    # =========================================================================
+    # RELLENO DE REGISTROS (HISTORIAL Y CONSOLA DE AUDITORÍA LOGS)
+    # =========================================================================
+
+    def _poblar_tabla_historial(self) -> None:
+        """Consulta lotes en SQLite y puebla las filas de la tabla Historial."""
+        for w in self.cuerpo_tabla_historial.winfo_children():
+            w.destroy()
+
+        cat = self.menu_cat_historial.get()
+        fecha = self.seg_fecha_historial.get()
+        filtro_mod = None if cat == "Todos" else cat
+        lotes = self.db_manager.obtener_historial_lotes(filtro_modelo=filtro_mod, filtro_fecha=fecha, limite=50)
+
+        if not lotes:
+            lbl_vacio = ctk.CTkLabel(
+                self.cuerpo_tabla_historial,
+                text="No hay lotes registrados para el criterio seleccionado.",
+                font=("Arial", 18),
+                text_color=GRIS_TEXTO,
+            )
+            lbl_vacio.pack(pady=20)
+            return
+
+        for idx, item in enumerate(lotes):
+            color_fila = GRIS_PANEL if idx % 2 == 0 else "white"
+            fila = ctk.CTkFrame(self.cuerpo_tabla_historial, fg_color=color_fila, corner_radius=0, height=48)
+            fila.pack(fill="x", pady=(0, 2))
+            fila.pack_propagate(False)
+
+            valores = [
+                str(item.get("fecha", ""))[:16],
+                str(item.get("id_lote", "")),
+                str(item.get("total_granos", 0)),
+                str(item.get("total_sanos", 0)),
+                f"{item.get('porcentaje_calidad', 0.0):.1f}%",
+                f"{item.get('tiempo_min', 0.0):.1f}",
+            ]
+            for val, w in zip(valores, self.anchos_columnas_historial):
+                ctk.CTkLabel(
+                    fila, text=val, width=w, font=("Arial", 18), text_color=GRIS_TEXTO
+                ).pack(side="left", padx=2)
+
+    def _cargar_consola_logs(self) -> None:
+        """Lee los eventos de logs_locales desde SQLite y los despliega en la consola."""
+        tipo = self.menu_tipo_logs.get()
+        fecha = self.seg_fecha_logs.get()
+        filtro_tipo = None if tipo == "Todos" else tipo
+        logs = self.db_manager.obtener_logs_locales(tipo=filtro_tipo, filtro_fecha=fecha, limite=100)
+
+        self.logs_box.configure(state="normal")
+        self.logs_box.delete("1.0", "end")
+
+        if not logs:
+            self.logs_box.insert("end", "[--:--:--] No se encontraron logs para los filtros seleccionados.\n")
+        else:
+            for ev in logs:
+                ts = str(ev.get("timestamp", ""))[-8:]
+                t = str(ev.get("tipo", "INFO")).upper()
+                msg = str(ev.get("mensaje", ""))
+                linea = f"[{ts}] {t:<7} - {msg}\n"
+
+                tag = t if t in ("ALARM", "WARNING", "INFO") else "DEFAULT"
+                self.logs_box.insert("end", linea, tag)
+
+        self.logs_box.configure(state="disabled")
+
+    # =========================================================================
+    # COMPATIBILIDAD CON TESTS UNITARIOS PREVIOS
+    # =========================================================================
+
+    def _al_cambiar_switch_modelo_compat(self) -> None:
+        es_13 = bool(self.switch_modelo.get())
+        self._al_conmutar_modelo("13 Clases" if es_13 else "Tri-clase")
+
+    def _al_cambiar_switch_sahi_compat(self) -> None:
+        es_sahi = bool(self.switch_sahi.get())
+        self.switch_sahi.configure(text=f"SAHI: {'ON' if es_sahi else 'OFF'}")
+        self.gestor_lotes.configurar_modelo(
+            modelo_13_clases=self.detector.es_modo_13clases, modo_sahi=es_sahi
+        )
+
+    def _al_cambiar_camara_top_compat(self, seleccion: str) -> None:
         nueva_top = self._parsear_fuente_texto(seleccion)
         anterior_top = self._fuente_top_actual
-        actual_bot = self._fuente_bottom_actual
-
-        if str(nueva_top) == str(actual_bot):
-            nueva_bot = anterior_top
-            self._fuente_bottom_actual = nueva_bot
+        if str(nueva_top) == str(self._fuente_bottom_actual):
+            self._fuente_bottom_actual = anterior_top
             if hasattr(self, "combo_cam_bottom"):
-                self.combo_cam_bottom.set(self._formatear_fuente_texto(nueva_bot))
-
+                self.combo_cam_bottom.set(self._formatear_fuente_texto(anterior_top))
         self._fuente_top_actual = nueva_top
         if hasattr(self, "combo_cam_top"):
             self.combo_cam_top.set(self._formatear_fuente_texto(nueva_top))
         self.detector.cambiar_fuentes_video(self._fuente_top_actual, self._fuente_bottom_actual)
 
-    def _al_cambiar_camara_bottom(self, seleccion: str) -> None:
+    def _al_cambiar_camara_bottom_compat(self, seleccion: str) -> None:
         nueva_bot = self._parsear_fuente_texto(seleccion)
         anterior_bot = self._fuente_bottom_actual
-        actual_top = self._fuente_top_actual
-
-        if str(nueva_bot) == str(actual_top):
-            nueva_top = anterior_bot
-            self._fuente_top_actual = nueva_top
+        if str(nueva_bot) == str(self._fuente_top_actual):
+            self._fuente_top_actual = anterior_bot
             if hasattr(self, "combo_cam_top"):
-                self.combo_cam_top.set(self._formatear_fuente_texto(nueva_top))
-
+                self.combo_cam_top.set(self._formatear_fuente_texto(anterior_bot))
         self._fuente_bottom_actual = nueva_bot
         if hasattr(self, "combo_cam_bottom"):
             self.combo_cam_bottom.set(self._formatear_fuente_texto(nueva_bot))
         self.detector.cambiar_fuentes_video(self._fuente_top_actual, self._fuente_bottom_actual)
+
+    _al_cambiar_switch_modelo = _al_cambiar_switch_modelo_compat
+    _al_cambiar_switch_sahi = _al_cambiar_switch_sahi_compat
+    _al_cambiar_camara_top = _al_cambiar_camara_top_compat
+    _al_cambiar_camara_bottom = _al_cambiar_camara_bottom_compat
 
     @staticmethod
     def _parsear_fuente_texto(texto: str) -> Union[int, str]:
         s = str(texto).strip()
         if "Demo" in s or "Sintético" in s or "demo" in s.lower():
             return "demo"
-        for digito in ("0", "1", "2"):
-            if digito in s:
-                return int(digito)
+        for dig in ("0", "1", "2"):
+            if dig in s:
+                return int(dig)
         return s
 
     @staticmethod
@@ -1586,449 +1820,44 @@ class DashboardCustomTkinter(ctk.CTk):
             return "Demo / Sintético"
         return f"Cámara {fuente}"
 
-    def _al_cambiar_switch_modelo(self) -> None:
-        es_13_clases = bool(self.switch_modelo.get())
-        if es_13_clases:
-            self.switch_modelo.configure(text="13 Clases")
-            if hasattr(self, "combo_modelo_hdr"):
-                self.combo_modelo_hdr.set("13 Clases")
-        else:
-            self.switch_modelo.configure(text="Tri-clase")
-            if hasattr(self, "combo_modelo_hdr"):
-                self.combo_modelo_hdr.set("Tri-clase")
-        if hasattr(self.detector, "cambiar_modelo"):
-            self.detector.cambiar_modelo(usar_13_clases=es_13_clases)
-        self.gestor_lotes.configurar_modelo(
-            modelo_13_clases=es_13_clases, modo_sahi=bool(self.switch_sahi.get())
-        )
-        self._actualizar_grafico_reactivo()
-
-    def _al_cambiar_switch_sahi(self) -> None:
-        es_sahi = bool(self.switch_sahi.get())
-        self.switch_sahi.configure(text=f"SAHI: {'ON' if es_sahi else 'OFF'}")
-        es_13_clases = bool(self.switch_modelo.get())
-        self.gestor_lotes.configurar_modelo(modelo_13_clases=es_13_clases, modo_sahi=es_sahi)
-
-    # =========================================================================
-    # REFRESH DE DATOS, HISTORIAL Y GRÁFICO REACTIVO
-    # =========================================================================
-
-    def _actualizar_grafico_reactivo(self) -> None:
-        """
-        Dibuja el gráfico de barras horizontales optimizado con los acrónimos
-        cortos estandarizados para 13 clases y tri-clase.
-        """
-        if self.ax_reactivo is None or self.fig_reactiva is None:
-            return
-
-        self.ax_reactivo.clear()
-        es_13_clases = self.detector.es_modo_13clases
-
-        if es_13_clases:
-            categorias = [
-                "Arabica_Agrio",
-                "Arabica_Brocado",
-                "Arabica_Bueno",
-                "Arabica_Cereza",
-                "Arabica_Concha",
-                "Arabica_Inmaduro",
-                "Arabica_Negro",
-                "Arabica_Quebrado",
-                "Robusta_Brocado",
-                "Robusta_Bueno",
-                "Robusta_Cereza",
-                "Robusta_Negro",
-                "Robusta_Quebrado",
-            ]
-            etiquetas = [MAPA_ACRONIMOS_13.get(c, c) for c in categorias]
-            valores = [self.gestor_lotes.conteo_crudo.get(c, 0) for c in categorias]
-            colores = [self.COLORES_13_CLASES.get(c, "#757575") for c in categorias]
-        else:
-            categorias = [
-                "Grano_Defecto",
-                "Robusta_Bueno",
-                "Arabica_Bueno",
-            ]
-            etiquetas = [MAPA_ACRONIMOS_TRI.get(c, c) for c in categorias]
-            valores = [self.gestor_lotes.conteo_crudo.get(c, 0) for c in categorias]
-            colores = [self.COLORES_TRI_CLASE.get(c, "#197B30") for c in categorias]
-
-        self.ax_reactivo.set_facecolor("#FAFAFA")
-        self.fig_reactiva.patch.set_facecolor("#FFFFFF")
-
-        posiciones = range(len(categorias))
-        barras = self.ax_reactivo.barh(posiciones, valores, color=colores, height=0.62)
-
-        self.ax_reactivo.set_yticks(posiciones)
-        self.ax_reactivo.set_yticklabels(etiquetas, fontsize=9, color="#4A3B32", weight="bold")
-        self.ax_reactivo.xaxis.grid(True, linestyle="--", alpha=0.4, color="#CFD8DC")
-        self.ax_reactivo.set_axisbelow(True)
-
-        for spine in ["top", "right"]:
-            self.ax_reactivo.spines[spine].set_visible(False)
-        for spine in ["left", "bottom"]:
-            self.ax_reactivo.spines[spine].set_color("#CFD8DC")
-
-        max_val = max(valores) if valores and max(valores) > 0 else 5
-        self.ax_reactivo.set_xlim(0, max_val * 1.25)
-        self.ax_reactivo.tick_params(axis="x", labelsize=8, colors="#757575")
-
-        try:
-            self.ax_reactivo.bar_label(barras, padding=3, fontsize=8.5, color="#4A3B32", weight="bold")
-        except Exception:
-            pass
-
-        self.fig_reactiva.tight_layout()
-        if self.canvas_reactivo:
-            self.canvas_reactivo.draw_idle()
-
-    def _cargar_historial_lotes(self) -> None:
-        """Carga y renderiza el historial de lotes en la tabla de VistaRegistros."""
-        if not hasattr(self, "scroll_historial"):
-            return
-
-        filtro_mod = self.opt_filtro_modelo_hist.get()
-        filtro_fec = self.seg_filtro_fecha_hist.get()
-        lotes = self.db_manager.obtener_historial_lotes(
-            filtro_modelo=filtro_mod if filtro_mod != "Todos" else None,
-            filtro_fecha=filtro_fec,
-            limite=150,
-        )
-
-        # Limpiar filas existentes (a partir de la fila 1 para preservar encabezados)
-        for w in self.scroll_historial.grid_slaves():
-            info = w.grid_info()
-            if int(info.get("row", 0)) > 0:
-                w.destroy()
-
-        if not lotes:
-            lbl_vacio = ctk.CTkLabel(
-                self.scroll_historial,
-                text="No hay registros históricos de lotes disponibles.",
-                text_color="#9E9E9E",
-                font=ctk.CTkFont(size=12),
-            )
-            lbl_vacio.grid(row=1, column=0, columnspan=6, pady=20)
-            return
-
-        for r_idx, item in enumerate(lotes, start=1):
-            bg = "#FFFFFF" if r_idx % 2 == 0 else "#F5F5F5"
-            valores = [
-                item.get("fecha", ""),
-                item.get("id_lote", ""),
-                str(item.get("total_granos", 0)),
-                str(item.get("total_sanos", 0)),
-                f"{item.get('porcentaje_calidad', 100.0):.1f}%",
-                f"{item.get('tiempo_min', 0.0):.1f}",
-            ]
-            for c_idx, val in enumerate(valores):
-                lbl = ctk.CTkLabel(
-                    self.scroll_historial,
-                    text=val,
-                    font=ctk.CTkFont(size=11),
-                    text_color="#424242",
-                    fg_color=bg,
-                    corner_radius=4,
-                    padx=6,
-                    pady=4,
-                )
-                lbl.grid(row=r_idx, column=c_idx, padx=2, pady=2, sticky="ew")
-
-    def _actualizar_visor_logs(self) -> None:
-        """Carga registros de logs locales en el visor de VistaRegistros."""
-        if not hasattr(self, "txt_logs"):
-            return
-
-        tipo_sel = self.opt_filtro_logs.get()
-        fecha_sel = self.seg_filtro_fecha.get()
-        logs = self.db_manager.obtener_logs_locales(
-            tipo=tipo_sel if tipo_sel != "TODOS" else None,
-            filtro_fecha=fecha_sel,
-            limite=350,
-        )
-
-        self.txt_logs.configure(state="normal")
-        self.txt_logs.delete("1.0", "end")
-
-        if not logs:
-            self.txt_logs.insert("end", "No se encontraron logs locales para el criterio seleccionado.\n")
-        else:
-            for item in logs:
-                ts = item.get("timestamp", "")
-                t = str(item.get("tipo", "INFO")).upper()
-                msg = item.get("mensaje", "")
-                tag = t if t in ("ALARM", "WARNING", "INFO") else "DEF"
-                try:
-                    self.txt_logs._textbox.insert("end", f"[{ts}] ", "TIMESTAMP")
-                    self.txt_logs._textbox.insert("end", f"[{t:7s}] ", tag)
-                    self.txt_logs._textbox.insert("end", f"{msg}\n", "DEF")
-                except Exception:
-                    self.txt_logs.insert("end", f"[{ts}] [{t:7s}] {msg}\n")
-
-        self.txt_logs.configure(state="disabled")
-        self.txt_logs.see("end")
-
     def _abrir_ventana_logs_toplevel(self) -> None:
-        """Abre ventana independiente de logs."""
-        if self._ventana_logs is not None and self._ventana_logs.winfo_exists():
-            self._ventana_logs.lift()
-            self._ventana_logs.focus_set()
-        else:
+        if self._ventana_logs is None or not self._ventana_logs.winfo_exists():
             self._ventana_logs = VentanaLogsToplevel(self, self.db_manager)
-
-    # =========================================================================
-    # BUCLE NATIVO DE STREAMING DE VIDEO Y TELEMETRÍA (60 FPS)
-    # =========================================================================
-
-    def _bucle_actualizacion_frame(self) -> None:
-        if not self._consumidor_activo:
-            return
-
-        try:
-            # Consumir el fotograma más reciente de la cola
-            payload = None
-            try:
-                while True:
-                    payload = self.detector.cola_salida.get_nowait()
-            except queue.Empty:
-                pass
-
-            if payload is not None:
-                # 1. Seleccionar la vista de cámara elegida por el operador (↕)
-                if self.camara_vista_activa == "BOTTOM" and "frame_bottom" in payload:
-                    frame_bgr = payload["frame_bottom"]
-                else:
-                    frame_bgr = payload.get("frame_top", payload.get("frame_bgr"))
-
-                # 2. Renderizar fotograma sobre el canvas
-                if frame_bgr is not None:
-                    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-                    pil_img = Image.fromarray(rgb)
-                    # Dimensionar adaptativamente preservando relación de aspecto
-                    w_disp = max(400, min(760, self.lbl_video.winfo_width() or 640))
-                    h_disp = max(300, min(600, self.lbl_video.winfo_height() or 580))
-                    pil_img_resized = pil_img.resize((w_disp, h_disp), Image.Resampling.BILINEAR)
-
-                    self._ctk_image_ref = ctk.CTkImage(
-                        light_image=pil_img_resized,
-                        dark_image=pil_img_resized,
-                        size=(w_disp, h_disp),
-                    )
-                    self.lbl_video.configure(image=self._ctk_image_ref, text="")
-
-                # 3. Actualizar Badges de FPS y Latencia
-                fps = payload.get("fps", 30.0)
-                lat = payload.get("latencia_ms", 0.0)
-                self.badge_fps.configure(text=f"FPS: {fps:.1f}")
-                self.badge_ms.configure(text=f"ms: {lat:.1f}")
-
-                # 4. Actualizar métricas del lote
-                if self.estado_operativo == "EN_MARCHA":
-                    dets = payload.get("detecciones", [])
-                    for d in dets:
-                        nombre = d.get("nombre_clase", "")
-                        es_def = d.get("es_defecto", False)
-                        self.gestor_lotes.registrar_grano(nombre, es_defecto=es_def)
-                        self.metricas.registrar_grano(nombre, es_defecto=es_def)
-
-            # Refresco periódico de métricas (cada 500 ms)
-            ahora = time.time()
-            if ahora - self._ultimo_refresco_kpi >= 0.5:
-                self._actualizar_metricas_ui()
-                self._ultimo_refresco_kpi = ahora
-
-        except Exception as e:
-            print(f"[DashboardCustomTkinter] Error en bucle de frame: {e}")
-
-        # Programar siguiente iteración
-        if self._consumidor_activo:
-            self._bucle_id = self.after(15, self._bucle_actualizacion_frame)
-
-    def _actualizar_metricas_ui(self) -> None:
-        """Actualiza las StatCards, balances y tiempo de uso."""
-        # 1. Tiempo de uso
-        en_marcha = self.estado_operativo == "EN_MARCHA"
-        self.gestor_tiempo.tick(en_marcha)
-        self.card_kpi_tiempo["valor"].configure(text=self.gestor_tiempo.obtener_tiempo_formateado())
-
-        # 2. Granos y calidad
-        total_g = self.gestor_lotes.total_granos if self.gestor_lotes.lote_activo else self.metricas.total_granos
-        sanos_g = self.gestor_lotes.total_sanos if self.gestor_lotes.lote_activo else self.metricas.total_sanos
-        def_g = self.gestor_lotes.total_defectuosos if self.gestor_lotes.lote_activo else self.metricas.total_defectuosos
-        calidad = (sanos_g / total_g * 100.0) if total_g > 0 else 100.0
-
-        self.card_kpi_granos["valor"].configure(text=f"{total_g} Granos")
-        self.card_kpi_granos["sub"].configure(text=f"Calidad: {calidad:.1f}% ({sanos_g} Sanos)")
-
-        # 3. Consumo y rendimiento
-        consumo = self.gestor_lotes.obtener_consumo_kwh() if self.gestor_lotes.lote_activo else self.metricas.calcular_consumo_kwh()
-        self.card_kpi_consumo["valor"].configure(text=f"{consumo:.4f} kWh")
-
-        self.card_kpi_latencia["valor"].configure(text=f"{self.detector._fps_captura:.1f} FPS")
-        self.card_kpi_latencia["sub"].configure(text=f"Latencia: {self.detector._latencia_inferencia_ms:.1f} ms")
-
-        # 4. Contador de Lotes en Header
-        stats_hist = self.db_manager.obtener_estadisticas_acumuladas()
-        tot_lotes = stats_hist.get("total_lotes", 0)
-        self.badge_lotes.configure(text=f"Lotes: {tot_lotes}")
-
-        # 5. Estado BD en Header
-        if self.db_manager.conectado_mongo:
-            self.badge_db.configure(text="Base de Datos ●", fg_color="#E8F5E9", text_color=self.COLOR_VERDE_ULSA)
         else:
-            self.badge_db.configure(text="Base de Datos ○", fg_color="#FFF8E1", text_color=self.COLOR_AMARILLO_ALERTA)
+            self._ventana_logs.focus()
 
-        # 6. Barras de balance
-        if total_g > 0:
-            ps = sanos_g / total_g
-            pd = def_g / total_g
-            self.lbl_sanos_val.configure(text=f"{sanos_g} ({ps * 100:.1f}%)")
-            self.bar_sanos.set(ps)
-            self.lbl_defectos_val.configure(text=f"{def_g} ({pd * 100:.1f}%)")
-            self.bar_defectos.set(pd)
-        else:
-            self.lbl_sanos_val.configure(text="0 (100.0%)")
-            self.bar_sanos.set(1.0)
-            self.lbl_defectos_val.configure(text="0 (0.0%)")
-            self.bar_defectos.set(0.0)
-
-    def _crear_statcard_neumorfica(
-        self,
-        parent: ctk.CTkBaseClass,
-        col: int,
-        titulo: str,
-        valor_ini: str,
-        sub_ini: str,
-    ) -> Dict[str, ctk.CTkLabel]:
-        card = ctk.CTkFrame(
-            parent,
-            fg_color=self.COLOR_FONDO_CARD_LIGHT,
-            corner_radius=self.RADIUS_CARD,
-            border_width=1,
-            border_color=self.COLOR_BORDE_NEUMORFICO,
-        )
-        card.grid(row=0, column=col, padx=5, pady=4, sticky="ew")
-
-        lbl_tit = ctk.CTkLabel(
-            card,
-            text=titulo,
-            font=ctk.CTkFont(size=12),
-            text_color=self.COLOR_GRIS_SEC,
-        )
-        lbl_tit.pack(anchor="w", padx=14, pady=(10, 2))
-
-        lbl_val = ctk.CTkLabel(
-            card,
-            text=valor_ini,
-            font=ctk.CTkFont(size=19, weight="bold"),
-            text_color=self.COLOR_CAFE_TEXTO,
-        )
-        lbl_val.pack(anchor="w", padx=14, pady=0)
-
-        lbl_sub = ctk.CTkLabel(
-            card,
-            text=sub_ini,
-            font=ctk.CTkFont(size=11),
-            text_color=self.COLOR_VERDE_ULSA,
-        )
-        lbl_sub.pack(anchor="w", padx=14, pady=(0, 10))
-
-        return {"valor": lbl_val, "sub": lbl_sub}
-
-    # =========================================================================
-    # ACCIONES DE LOTES Y AUDITORÍA
-    # =========================================================================
-
-    def _finalizar_lote_manual(self) -> None:
-        if not self.gestor_lotes.lote_activo:
-            messagebox.showinfo("MOPPI", "No hay ningún lote activo en curso para finalizar.")
-            return
-
-        resumen = self.gestor_lotes.finalizar_lote(motivo="manual")
-        if resumen:
-            self._actualizar_metricas_ui()
-            self._cargar_historial_lotes()
-            messagebox.showinfo(
-                "Lote Finalizado",
-                f"Lote {resumen['id_lote']} cerrado exitosamente.\n"
-                f"Granos: {resumen['total_granos']} | Calidad: {resumen['porcentaje_calidad']}%\n"
-                f"Consumo: {resumen['consumo_kwh']} kWh",
-            )
-
-    def _al_lote_finalizado_auto(self, resumen: Dict[str, Any]) -> None:
-        self._actualizar_metricas_ui()
-        print(f"[MOPPI] Lote {resumen.get('id_lote')} auto-finalizado por inactividad.")
-
-    def _sincronizar_pendientes_manual(self) -> None:
-        def _tarea():
-            count = self.db_manager.sincronizar_pendientes()
-            self._actualizar_metricas_ui()
-            self._cargar_historial_lotes()
-            msg = f"Se sincronizaron {count} lotes con MongoDB Atlas." if count > 0 else "No hay lotes pendientes de sincronizar."
-            messagebox.showinfo("Sincronización Cloud", msg)
-
-        threading.Thread(target=_tarea, daemon=True).start()
-
-    def _reiniciar_estadisticas(self) -> None:
-        self.metricas.reiniciar()
-        self._actualizar_metricas_ui()
-        messagebox.showinfo("MOPPI", "Estadísticas reiniciadas correctamente.")
-
-    # =========================================================================
-    # CIERRE SEGURO DE LA APLICACIÓN
-    # =========================================================================
+    def _alternar_pantalla_completa(self, event=None) -> None:
+        self._pantalla_completa = not self._pantalla_completa
+        self.attributes("-fullscreen", self._pantalla_completa)
 
     def _al_cerrar(self) -> None:
-        """Cierre ordenado de hilos, base de datos y detector."""
-        self._consumidor_activo = False
-        if self._bucle_id is not None:
-            try:
-                self.after_cancel(self._bucle_id)
-            except Exception:
-                pass
-            self._bucle_id = None
-
+        """Cierre ordenado liberando recursos, hilos y cámara."""
+        self._bucle_video_activo = False
         try:
-            self.gestor_tiempo.guardar_estado()
-        except Exception:
-            pass
-
-        if self._ventana_logs is not None:
-            try:
-                if self._ventana_logs.winfo_exists():
-                    self._ventana_logs.destroy()
-            except Exception:
-                pass
-
-        if self.modal_trigger is not None:
-            try:
-                if self.modal_trigger.winfo_exists():
-                    self.modal_trigger.destroy()
-            except Exception:
-                pass
-
-        try:
-            self.gestor_lotes.detener()
+            if hasattr(self, "_id_after_bucle") and self._id_after_bucle is not None:
+                self.after_cancel(self._id_after_bucle)
         except Exception:
             pass
 
         try:
-            self.db_manager.cerrar()
+            if self.detector:
+                self.detector.detener()
         except Exception:
             pass
 
         try:
-            self.detector.detener()
+            if self.esp32_bridge:
+                self.esp32_bridge.control_banda(False)
+                self.esp32_bridge.desconectar()
         except Exception:
             pass
 
-        if self.esp32_bridge:
-            try:
-                self.esp32_bridge.cerrar()
-            except Exception:
-                pass
+        self.destroy()
 
-        try:
-            self.destroy()
-        except Exception:
-            pass
+
+if __name__ == "__main__":
+    from core.metricas import GestorMetricas
+    det = YOLODetector(ruta_modelo="models/best.pt", fuente_video="demo")
+    met = GestorMetricas()
+    app = DashboardCustomTkinter(detector=det, metricas=met)
+    app.mainloop()

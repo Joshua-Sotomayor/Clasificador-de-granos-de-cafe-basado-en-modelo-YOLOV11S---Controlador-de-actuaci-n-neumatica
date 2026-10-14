@@ -304,9 +304,9 @@ class ESP32Bridge:
         elif comando == "STOP":
             self._procesar_linea_recibida("OK:STOP")
         elif comando == "BANDA:ON":
-            self._procesar_linea_recibida("OK:BANDA:ON")
+            self._procesar_linea_recibida("OK:BANDA_ON")
         elif comando == "BANDA:OFF":
-            self._procesar_linea_recibida("OK:BANDA:OFF")
+            self._procesar_linea_recibida("OK:BANDA_OFF")
         elif comando.startswith("PILOT:"):
             self._procesar_linea_recibida(f"OK:{comando}")
         elif comando.startswith("ACT:"):
