@@ -62,8 +62,8 @@ class InterfazApp(ctk.CTk):
         }
         self._barras_izq = {
             "Dashboard":  self.barra_izq_dashboard,
-            "Analíticas": self.barra_izq_analiticas
-            # "Registros" no tiene controles propios todavía
+            "Analíticas": self.barra_izq_analiticas,
+            "Registros":  self.barra_izq_registros
         }
 
         # Conectar las pestañas con el cambio de ventana real
@@ -113,6 +113,7 @@ class InterfazApp(ctk.CTk):
 
         self.crear_bloque_izq_dashboard()
         self.crear_bloque_izq_analiticas()
+        self.crear_bloque_izq_registros()
 
     def crear_bloque_izq_dashboard(self):
         # Bloque izquierdo del DASHBOARD: ocupa la misma columna 0 que el visor
@@ -199,6 +200,48 @@ class InterfazApp(ctk.CTk):
             **self.config_btn_superior
         )
         btn_modelos.grid(row=0, column=2, sticky="ew", padx=(10, 20))
+
+    def crear_bloque_izq_registros(self):
+        # Bloque izquierdo de REGISTROS: idéntico al de Analíticas pero
+        # SIN el selector de modelos. La píldora de BD y el contador de
+        # lotes conservan exactamente las mismas posiciones y tamaños.
+        self.barra_izq_registros = ctk.CTkFrame(self, fg_color="transparent")
+        self.barra_izq_registros.grid(row=0, column=0, sticky="new", padx=(20, 10), pady=15)
+
+        self.barra_izq_registros.grid_columnconfigure(0, weight=1)
+        self.barra_izq_registros.grid_columnconfigure(1, weight=1)
+        self.barra_izq_registros.grid_columnconfigure(2, weight=1)  # Hueco donde iba "Modelos"
+
+        config_pildora = {
+            "fg_color": GRIS_SUAVE,
+            "corner_radius": 40,
+            "border_width": 2,
+            "border_color": GRIS_BORDE,
+            "height": 80
+        }
+
+        # --- 1) Indicador "Base de Datos" con LED interno (MongoDB) ---
+        pill_db = ctk.CTkFrame(self.barra_izq_registros, **config_pildora, width=250)
+        pill_db.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        pill_db.pack_propagate(False)
+
+        inner_db = ctk.CTkFrame(pill_db, fg_color="transparent")
+        inner_db.place(relx=0.5, rely=0.5, anchor="center")
+
+        ctk.CTkLabel(inner_db, text="Base de Datos", font=("Arial", 24), text_color=GRIS_TEXTO).pack(side="left", padx=(0, 10))
+
+        # LED espejo del de Analíticas: el backend debe mantener AMBOS en
+        # sincronía (self.led_mongo y self.led_mongo_registros).
+        self.led_mongo_registros = ctk.CTkFrame(inner_db, width=34, height=34, corner_radius=17, fg_color=GRIS_MEDIO)
+        self.led_mongo_registros.pack(side="left")
+
+        # --- 2) Contador de lotes (espejo de self.lbl_lotes) ---
+        pill_lotes = ctk.CTkFrame(self.barra_izq_registros, **config_pildora)
+        pill_lotes.grid(row=0, column=1, sticky="ew", padx=(10, 10))
+        pill_lotes.pack_propagate(False)
+
+        self.lbl_lotes_registros = ctk.CTkLabel(pill_lotes, text="Lotes:  ---", font=("Arial", 24), text_color=GRIS_TEXTO)
+        self.lbl_lotes_registros.place(relx=0.5, rely=0.5, anchor="center")
 
     # =====================================================================
     #  CAMBIO DE VENTANAS
@@ -550,18 +593,132 @@ class InterfazApp(ctk.CTk):
         btn_sincronizar.grid(row=3, column=0, columnspan=2, sticky="ew", padx=25, pady=12)
 
     # =====================================================================
-    #  PÁGINA: REGISTROS (pendiente de diseño)
+    #  PÁGINA: REGISTROS
     # =====================================================================
     def crear_pagina_registros(self):
+        # Contenedor de una sola columna centrada: el ancho real lo fijan
+        # los bloques internos de 1204 px (regla de oro del wireframe).
         self.pagina_registros = ctk.CTkFrame(self, fg_color="transparent")
         self.pagina_registros.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        self.pagina_registros.grid_columnconfigure(0, weight=1)
+        self.pagina_registros.grid_rowconfigure(0, weight=1)
 
-        ctk.CTkLabel(
-            self.pagina_registros,
-            text="Ventana de Registros\n(pendiente de diseño)",
-            font=("Arial", 24, "bold"),
-            text_color=GRIS_MEDIO
-        ).place(relx=0.5, rely=0.5, anchor="center")
+        contenido = ctk.CTkFrame(self.pagina_registros, fg_color="transparent")
+        contenido.grid(row=0, column=0, sticky="n")
+
+        # --- NIVEL 2: HISTORIAL (tabla de historial de granos) ----------
+        self.crear_fila_filtros(contenido, "Historial").grid(row=0, column=0, pady=(0, 12))
+        self.crear_tabla_historial(contenido).grid(row=1, column=0, pady=(0, 12))
+
+        # --- NIVEL 3: LOGS (registros del sistema, menor altura) --------
+        self.crear_fila_filtros(contenido, "LOGS").grid(row=2, column=0, pady=(0, 12))
+        self.crear_caja_logs(contenido).grid(row=3, column=0)
+
+    def crear_fila_filtros(self, padre, titulo):
+        # Fila de 1204 x 70: filtros temporales a la izquierda y
+        # título de sección (36 pt bold) alineado a la derecha.
+        fila = ctk.CTkFrame(padre, fg_color="transparent", width=1204, height=70)
+        fila.pack_propagate(False)
+
+        grupo_filtros = ctk.CTkFrame(fila, fg_color="transparent")
+        grupo_filtros.pack(side="left")
+
+        # Selector desplegable individual: exactamente 140 x 70 px
+        menu_categoria = ctk.CTkOptionMenu(
+            grupo_filtros,
+            values=["Todos", "Arábica", "Robusta", "Defectos"],  # placeholder
+            width=140, height=70,
+            font=("Arial", 24), dropdown_font=("Arial", 24),
+            fg_color=VERDE, button_color=VERDE_HOVER, button_hover_color=VERDE_CLARO,
+            text_color="white",
+            corner_radius=35
+        )
+        menu_categoria.pack(side="left", padx=(0, 14))
+
+        # Barra segmentada de filtrado rápido (mismo lenguaje que las pestañas)
+        filtros_rapidos = ctk.CTkSegmentedButton(
+            grupo_filtros,
+            values=["Hoy", "Últimos 3 días", "Última Semana", "Todos"],
+            fg_color=GRIS_SUAVE,
+            unselected_color=GRIS_SUAVE,
+            unselected_hover_color=GRIS_SUAVE_HOV,
+            selected_color=VERDE,
+            selected_hover_color=VERDE_HOVER,
+            text_color=GRIS_TEXTO,
+            text_color_disabled=GRIS_MEDIO,
+            height=70, font=("Arial", 24),
+            corner_radius=35
+        )
+        filtros_rapidos.set("Todos")
+        filtros_rapidos.pack(side="left")
+
+        # Título de sección a la derecha: 36 pt bold
+        ctk.CTkLabel(fila, text=titulo, font=("Arial", 36, "bold"),
+                     text_color=GRIS_TEXTO).pack(side="right", padx=(10, 5))
+        return fila
+
+    def crear_tabla_historial(self, padre):
+        # Tabla de historial: 1204 x 267 px con scrollbar vertical a la derecha.
+        COLUMNAS = ["Fecha", "N° de Lote", "Granos Totales",
+                    "G buenos (N)", "G buenos (%)", "Tiempo (min)"]
+        ANCHOS = [185, 160, 210, 200, 205, 165]  # suma de celdas < 1204 px
+
+        tabla = ctk.CTkFrame(padre, width=1204, height=230,
+                             fg_color=GRIS_PANEL, corner_radius=10,
+                             border_width=2, border_color=GRIS_BORDE)
+        tabla.pack_propagate(False)
+
+        # Cabecera fija (no se desplaza con el scroll): verde institucional
+        cabecera = ctk.CTkFrame(tabla, fg_color=VERDE, corner_radius=10, height=54)
+        cabecera.pack(fill="x", padx=(6, 22), pady=(6, 4))
+        cabecera.pack_propagate(False)
+        for titulo, ancho in zip(COLUMNAS, ANCHOS):
+            ctk.CTkLabel(cabecera, text=titulo, width=ancho,
+                         font=("Arial", 24, "bold"),
+                         text_color="white").pack(side="left", padx=2)
+
+        # Cuerpo desplazable: el fondo gris asoma entre filas y dibuja
+        # la rejilla estructurada del wireframe.
+        cuerpo = ctk.CTkScrollableFrame(tabla, fg_color=GRIS_BORDE, corner_radius=0)
+        cuerpo.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+
+        # Filas placeholder en piel de cebra. El backend actualizará los
+        # textos directamente:  self.celdas_historial[fila][col].configure(text=...)
+        self.celdas_historial = []
+        for i in range(12):
+            color_fila = GRIS_PANEL if i % 2 == 0 else "white"
+            fila = ctk.CTkFrame(cuerpo, fg_color=color_fila, corner_radius=0, height=48)
+            fila.pack(fill="x", pady=(0, 2))
+            fila.pack_propagate(False)
+            celdas = []
+            for ancho in ANCHOS:
+                lbl = ctk.CTkLabel(fila, text="---", width=ancho,
+                                   font=("Arial", 24), text_color=GRIS_TEXTO)
+                lbl.pack(side="left", padx=2)
+                celdas.append(lbl)
+            self.celdas_historial.append(celdas)
+        return tabla
+
+    def crear_caja_logs(self, padre):
+        # Caja de logs estilo terminal HMI: 1204 x 185 px, acero oscuro con
+        # texto verde fósforo y scrollbar vertical integrado a la derecha.
+        # Para escribir desde el backend:
+        #   self.logs_box.configure(state="normal")
+        #   self.logs_box.insert("end", "[hh:mm:ss] mensaje...\n")
+        #   self.logs_box.configure(state="disabled")
+        self.logs_box = ctk.CTkTextbox(
+            padre, width=1204, height=155,
+            fg_color=GRIS_OSCURO, text_color=VERDE_LED,
+            border_width=2, border_color=VERDE_CLARO,
+            corner_radius=10,
+            font=("Consolas", 24)
+        )
+        self.logs_box.insert("end",
+            "[--:--:--] Sistema listo. Los eventos del proceso aparecerán aquí.\n"
+            "[--:--:--] INFO  - Conexión con MongoDB pendiente\n"
+            "[--:--:--] INFO  - Telemetría en espera\n")
+        self.logs_box.configure(state="disabled")
+        return self.logs_box
 
 
 if __name__ == "__main__":
