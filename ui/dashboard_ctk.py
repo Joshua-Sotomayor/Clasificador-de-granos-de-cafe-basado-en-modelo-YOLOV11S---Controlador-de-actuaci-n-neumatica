@@ -279,6 +279,7 @@ class DashboardCustomTkinter(ctk.CTk):
         db_manager: Optional[Union[DatabaseManager, MongoManager]] = None,
         gestor_lotes: Optional[GestorLotes] = None,
         esp32_bridge: Optional[ESP32Bridge] = None,
+        auto_iniciar_camara: bool = True,
     ) -> None:
         super().__init__()
 
@@ -373,6 +374,13 @@ class DashboardCustomTkinter(ctk.CTk):
 
         # Verificar si hubo corte abrupto previo para aplicar BLOQUEO_SEGURIDAD
         self._verificar_corte_abrupto_al_arranque()
+
+        # Iniciar hilos de captura continua en el detector si no están ya ejecutando
+        if auto_iniciar_camara and hasattr(self.detector, "iniciar") and not getattr(self.detector, "_ejecutando", False):
+            try:
+                self.detector.iniciar()
+            except Exception as e:
+                logger.warning(f"Error al iniciar captura del detector: {e}")
 
         # Iniciar bucle de actualización visual de video
         self._bucle_video_activo = True
@@ -1373,6 +1381,11 @@ class DashboardCustomTkinter(ctk.CTk):
             return
 
         if self.estado_operativo == "STANDBY":
+            if hasattr(self.detector, "iniciar") and not getattr(self.detector, "_ejecutando", False):
+                try:
+                    self.detector.iniciar()
+                except Exception as e:
+                    logger.warning(f"Error al iniciar captura de video: {e}")
             self.detector.iniciar_clasificacion()
             self.metricas.iniciar_sesion()
             if hasattr(self.gestor_lotes, "iniciar_lote"):
@@ -1572,14 +1585,35 @@ class DashboardCustomTkinter(ctk.CTk):
                 self._fps_actual = 0.9 * self._fps_actual + 0.1 * (1.0 / dt)
             self._ultimo_tiempo_frame = ahora
 
-            # 1. Consumir el payload más reciente de la cola de salida de YOLODetector (descartando cuadros viejos)
-            payload = None
+            # 1. Consumir todos los payloads disponibles de la cola de salida de YOLODetector
+            payloads = []
             if self.detector and hasattr(self.detector, "cola_salida"):
                 try:
                     while True:
-                        payload = self.detector.cola_salida.get_nowait()
+                        payloads.append(self.detector.cola_salida.get_nowait())
                 except queue.Empty:
                     pass
+
+            # Si la clasificadora está en marcha, registrar detecciones en GestorLotes y GestorMetricas
+            if payloads and self.estado_operativo == "EN_MARCHA":
+                for p in payloads:
+                    dets = p.get("detecciones", [])
+                    if dets:
+                        fps_p = float(p.get("fps", self._fps_actual))
+                        lat_p = float(p.get("latencia_ms", self._latencia_inferencia_actual))
+                        if self.gestor_lotes:
+                            try:
+                                self.gestor_lotes.registrar_detecciones(dets, fps_p, lat_p)
+                            except Exception as e_lot:
+                                logger.debug(f"Error registrando detecciones en GestorLotes: {e_lot}")
+                        if self.metricas:
+                            try:
+                                self.metricas.registrar_detecciones(dets, fps_p, lat_p)
+                            except Exception as e_met:
+                                logger.debug(f"Error registrando detecciones en GestorMetricas: {e_met}")
+
+            # Usar el payload más reciente para renderizado visual
+            payload = payloads[-1] if payloads else None
 
             frame_render = None
             if payload is not None:
@@ -1637,6 +1671,11 @@ class DashboardCustomTkinter(ctk.CTk):
             return
 
         try:
+            # Avanzar cronometraje acumulado y cómputo de energía si la máquina está en marcha
+            clasificacion_activa = (self.estado_operativo == "EN_MARCHA")
+            if hasattr(self, "gestor_tiempo") and self.gestor_tiempo is not None:
+                self.gestor_tiempo.tick(clasificacion_activa)
+
             self._actualizar_tarjetas_estadisticas()
             self._actualizar_indicador_bd_y_lotes()
             if getattr(self, "_pagina_actual", "Dashboard") == "Analíticas":
@@ -1681,6 +1720,9 @@ class DashboardCustomTkinter(ctk.CTk):
             # 3. Estadísticas de granos
             tot_granos = getattr(self.gestor_lotes, "total_granos", 0)
             tot_sanos = getattr(self.gestor_lotes, "total_sanos", 0)
+            if tot_granos == 0 and hasattr(self, "metricas"):
+                tot_granos = getattr(self.metricas, "total_granos", 0)
+                tot_sanos = getattr(self.metricas, "total_sanos", 0)
             peso_gr = tot_granos * 0.18  # ~0.18 gramos por grano de café oro
             calidad = (tot_sanos / tot_granos * 100.0) if tot_granos > 0 else 100.0
             self.stat_granos.configure(text=f"{int(peso_gr)} grs")
@@ -1703,6 +1745,8 @@ class DashboardCustomTkinter(ctk.CTk):
 
         es_13 = getattr(self.detector, "es_modo_13clases", False)
         conteo_crudo = getattr(self.gestor_lotes, "conteo_crudo", {})
+        if not any(conteo_crudo.values()) and hasattr(self, "metricas"):
+            conteo_crudo = getattr(self.metricas, "conteo_por_clase", conteo_crudo)
 
         if es_13:
             total_ar = sum(cant for clase, cant in conteo_crudo.items() if "Arabica" in clase)

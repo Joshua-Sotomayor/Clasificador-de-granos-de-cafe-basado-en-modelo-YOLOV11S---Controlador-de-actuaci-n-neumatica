@@ -328,6 +328,101 @@ class TestHMIV170(unittest.TestCase):
         self.app._bucle_actualizacion_video()
         self.assertIsNotNone(self.app.lbl_video_display.image)
 
+    def test_flujo_detecciones_y_analiticas_en_tiempo_real(self):
+        """
+        Verifica la integración completa del pipeline de analíticas:
+        1. Al arrancar marcha (M), se consumen detecciones de la cola de salida.
+        2. GestorLotes y GestorMetricas registran los granos automáticamente.
+        3. GestorTiempoUso avanza segundos acumulados y kWh consumidos.
+        4. Las StatCards (granos, tiempo, consumo, precisión) se actualizan en vivo.
+        5. Al pasar a PARO, no se registran detecciones adicionales.
+        """
+        import time
+        # Iniciar marcha
+        self.app._al_pulsar_marcha()
+        self.assertEqual(self.app.estado_operativo, "EN_MARCHA")
+
+        # Encolar payload con 3 granos detectados
+        detecciones_prueba = [
+            {"clase_id": 0, "nombre_clase": "Arabica_Bueno", "confianza": 0.95, "caja": (10, 10, 50, 50), "x_center": 30, "y_center": 30, "canal": 0, "es_defecto": False},
+            {"clase_id": 1, "nombre_clase": "Arabica_Brocado", "confianza": 0.88, "caja": (180, 20, 220, 60), "x_center": 200, "y_center": 40, "canal": 1, "es_defecto": True},
+            {"clase_id": 2, "nombre_clase": "Robusta_Bueno", "confianza": 0.92, "caja": (340, 30, 380, 70), "x_center": 360, "y_center": 50, "canal": 2, "es_defecto": False},
+        ]
+        import numpy as np
+        frame_dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+        self.detector.cola_salida.put({
+            "frame_top": frame_dummy,
+            "frame_bottom": frame_dummy,
+            "detecciones": detecciones_prueba,
+            "fps": 32.5,
+            "latencia_ms": 2.8,
+        })
+
+        # Procesar bucle de video
+        self.app._bucle_actualizacion_video()
+
+        # Verificar que GestorLotes recibió los 3 granos
+        self.assertEqual(self.app.gestor_lotes.total_granos, 3)
+        self.assertEqual(self.app.gestor_lotes.total_sanos, 2)
+        self.assertEqual(self.app.gestor_lotes.total_defectuosos, 1)
+
+        # Simular avance de tiempo (tick de 2 segundos)
+        self.app.gestor_tiempo._ultimo_tick_ts = time.time() - 2.0
+        self.app._bucle_actualizacion_analiticas()
+
+        # Verificar que el tiempo avanzó y las statcards se actualizaron
+        self.assertGreater(self.app.gestor_tiempo.segundos_hoy, 0)
+        self.assertIn("grs", self.app.stat_granos.cget("text"))
+        self.assertIn("kWh", self.app.stat_consumo.cget("text"))
+        self.assertIn("66.7 %", self.app.stat_precision.cget("text"))
+
+        # Poner en PARO
+        self.app._al_pulsar_paro()
+        self.assertEqual(self.app.estado_operativo, "PARO")
+
+        # Nuevas detecciones en PARO NO deben sumarse
+        self.detector.cola_salida.put({
+            "frame_top": frame_dummy,
+            "detecciones": [{"clase_id": 0, "nombre_clase": "Arabica_Bueno", "es_defecto": False}],
+            "fps": 30.0,
+            "latencia_ms": 2.5,
+        })
+        self.app._bucle_actualizacion_video()
+        self.assertEqual(self.app.gestor_lotes.total_granos, 3)
+
+    def test_filtro_variedad_grafica_reactiva_13_clases(self):
+        """
+        Verifica que al conmutar a 13 Clases:
+        - Si solo hay detecciones Arábica, la gráfica filtra mostrando solo Arábica.
+        - Si solo hay detecciones Robusta, la gráfica filtra mostrando solo Robusta.
+        """
+        self.app._al_conmutar_modelo("13 Clases")
+        self.assertTrue(self.app.detector.es_modo_13clases)
+
+        # 1. Solo Arábica
+        self.app.gestor_lotes.conteo_crudo = {
+            "Arabica_Bueno": 10,
+            "Arabica_Brocado": 2,
+            "Robusta_Bueno": 0,
+            "Robusta_Negro": 0,
+        }
+        self.app._actualizar_grafico_reactivo()
+        labels_y = [t.get_text() for t in self.app.ax_analiticas.get_yticklabels()]
+        self.assertIn("AR_B", labels_y)
+        self.assertNotIn("RO_B", labels_y)
+
+        # 2. Solo Robusta
+        self.app.gestor_lotes.conteo_crudo = {
+            "Arabica_Bueno": 0,
+            "Arabica_Brocado": 0,
+            "Robusta_Bueno": 15,
+            "Robusta_Negro": 3,
+        }
+        self.app._actualizar_grafico_reactivo()
+        labels_y = [t.get_text() for t in self.app.ax_analiticas.get_yticklabels()]
+        self.assertIn("RO_B", labels_y)
+        self.assertNotIn("AR_B", labels_y)
+
 
 if __name__ == "__main__":
     unittest.main()

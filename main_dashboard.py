@@ -24,6 +24,10 @@ def main():
     ruta_modelo_13clases = os.getenv("MODEL_13CLASES_PATH", "models/best_13clases.pt")
     fuente_video_raw = os.getenv("CAMERA_SOURCE", "0")
     fuente_video = int(fuente_video_raw) if fuente_video_raw.isdigit() else fuente_video_raw
+    fuente_top_raw = os.getenv("CAMERA_SOURCE_TOP", fuente_video_raw)
+    fuente_bot_raw = os.getenv("CAMERA_SOURCE_BOTTOM", "1")
+    fuente_top = int(fuente_top_raw) if str(fuente_top_raw).isdigit() else fuente_top_raw
+    fuente_bot = int(fuente_bot_raw) if str(fuente_bot_raw).isdigit() else fuente_bot_raw
     potencia_kw = float(os.getenv("HARDWARE_POWER_KW", "0.5"))
     confianza_min = float(os.getenv("CONFIDENCE_THRESHOLD", "0.35"))
     mongo_uri = os.getenv("MONGO_URI", "")
@@ -32,7 +36,7 @@ def main():
     print("Iniciando MOPPI - Sistema de Clasificación Óptica de Café")
     print(f"Modelo Tri-Clase: {ruta_modelo}")
     print(f"Modelo 13 Clases: {ruta_modelo_13clases}")
-    print(f"Fuente Video: {fuente_video}")
+    print(f"Cámara Superior: {fuente_top} | Cámara Inferior: {fuente_bot}")
     print(f"Potencia Nominal: {potencia_kw} kW")
     print("=" * 60)
 
@@ -45,9 +49,13 @@ def main():
         ruta_modelo=ruta_modelo,
         ruta_modelo_13clases=ruta_modelo_13clases,
         fuente_video=fuente_video,
+        fuente_video_top=fuente_top,
+        fuente_video_bottom=fuente_bot,
         confianza_minima=confianza_min,
         esp32_bridge=esp32_bridge,
     )
+    # Iniciar streaming continuo del detector
+    detector.iniciar()
 
     # 2. Lanzar interfaz gráfica
     if "--flet" in sys.argv:
