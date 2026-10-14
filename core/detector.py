@@ -257,6 +257,7 @@ class SeguidorGranos:
 
                     det["id_seguimiento"] = grano.id
                     det["procesado"] = grano.procesado
+                    det["es_nuevo"] = False
 
                     # Disparo único al cruzar línea cinemática
                     if grano.es_defecto and grano.y >= linea_disparo_y and not grano.procesado:
@@ -276,6 +277,7 @@ class SeguidorGranos:
                         es_defecto=es_def,
                     )
                     det["id_seguimiento"] = nuevo_id
+                    det["es_nuevo"] = True
 
                     # Si el grano nace ya sobre o después de la línea de disparo
                     if es_def and cy >= linea_disparo_y:
@@ -366,6 +368,7 @@ class YOLODetector:
         self.ruta_modelo_13clases = ruta_modelo_13clases or os.getenv("MODEL_13CLASES_PATH", "models/best_13clases.pt")
         self.ruta_modelo = self.ruta_modelo_triclase
         self.es_modo_13clases: bool = False
+        self.modo_sahi: bool = False
 
         self.fuente_video = fuente_video
         self.cola_salida = cola_salida if cola_salida is not None else queue.Queue(maxsize=3)
@@ -612,16 +615,20 @@ class YOLODetector:
             self.modelo = None
             self.modo_simulado = True
 
-    def cambiar_modelo(self, usar_13_clases: bool) -> bool:
+    def cambiar_modelo(self, usar_13_clases: bool, modo_sahi: bool = False) -> bool:
         """
-        Conmuta el modelo de red neuronal global compartido entre 'Tri-clase' y '13 Clases'.
-        Ambas cámaras (superior e inferior) utilizarán inmediatamente los mismos pesos actualizados.
+        Conmuta el modelo de red neuronal global compartido entre 'Tri-clase' y '13 Clases',
+        y activa o desactiva la inferencia por mosaicos/slicing SAHI.
+        Ambas cámaras (superior e inferior) utilizarán inmediatamente la misma configuración.
         :param usar_13_clases: True para activar 13 Clases, False para modelo Tri-clase (Campeón V10).
+        :param modo_sahi: True para habilitar inferencia por slicing SAHI multi-resolución.
         """
         with self._lock:
             self.es_modo_13clases = usar_13_clases
+            self.modo_sahi = modo_sahi
             self._inicializar_modelo()
-            modo_txt = "13 Clases" if usar_13_clases else "Tri-clase (Campeón V10)"
+            sahi_txt = " + SAHI" if modo_sahi else ""
+            modo_txt = f"{'13 Clases' if usar_13_clases else 'Tri-clase (Campeón V10)'}{sahi_txt}"
             print(f"[YOLODetector] Modelo global actualizado para ambas cámaras: {modo_txt}")
             return not self.modo_simulado
 
@@ -1027,10 +1034,132 @@ class YOLODetector:
             # Pequeña pausa para no saturar 100% el CPU
             time.sleep(0.02)
 
+    def _ejecutar_inferencia_sahi(
+        self, frame: np.ndarray, es_bottom: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        Ejecuta inferencia asistida por mosaicos/slicing (SAHI nativo de ultra-alta velocidad).
+        Divide el cuadro en parches superpuestos (320x320 con solapamiento) y combina con el cuadro completo,
+        reproyecta las coordenadas relativas al espacio global del frame y aplica NMS (Non-Maximum Suppression).
+        """
+        if self.modo_simulado or self.modelo is None:
+            if es_bottom:
+                return self._simular_detecciones_bottom([], frame.shape)
+            return self._simular_detecciones(frame.shape)
+
+        h_img, w_img = frame.shape[:2]
+        slice_w, slice_h = 320, 320
+        overlap = 0.20
+        step_x = max(64, int(slice_w * (1.0 - overlap)))
+        step_y = max(64, int(slice_h * (1.0 - overlap)))
+
+        # Generar coordenadas de las ventanas deslizantes (slices)
+        slices = []
+        y = 0
+        while y < h_img:
+            y_fin = min(y + slice_h, h_img)
+            y_ini = max(0, y_fin - slice_h)
+            x = 0
+            while x < w_img:
+                x_fin = min(x + slice_w, w_img)
+                x_ini = max(0, x_fin - slice_w)
+                slices.append((x_ini, y_ini, x_fin, y_fin))
+                if x_fin >= w_img:
+                    break
+                x += step_x
+            if y_fin >= h_img:
+                break
+            y += step_y
+
+        cajas_brutas = []  # [x, y, w, h] para NMS
+        scores = []
+        clases = []
+
+        # 1. Inferencia sobre el frame completo para contexto global
+        try:
+            res_global = self.modelo(frame, imgsz=320, conf=self.confianza_minima, verbose=False)
+            for r in res_global:
+                for box in r.boxes:
+                    c_id = int(box.cls[0].item())
+                    conf = float(box.conf[0].item())
+                    x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+                    cajas_brutas.append([x1, y1, x2 - x1, y2 - y1])
+                    scores.append(conf)
+                    clases.append(c_id)
+        except Exception as e:
+            logger.debug(f"[SAHI] Error en inferencia global: {e}")
+
+        # 2. Inferencia en cada ventana deslizante (slice)
+        for (x_ini, y_ini, x_fin, y_fin) in slices:
+            crop = frame[y_ini:y_fin, x_ini:x_fin]
+            if crop.size == 0:
+                continue
+            try:
+                res_slice = self.modelo(crop, imgsz=320, conf=self.confianza_minima, verbose=False)
+                for r in res_slice:
+                    for box in r.boxes:
+                        c_id = int(box.cls[0].item())
+                        conf = float(box.conf[0].item())
+                        bx1, by1, bx2, by2 = [int(v) for v in box.xyxy[0].tolist()]
+                        # Reproyectar a coordenadas globales del frame
+                        gx1 = bx1 + x_ini
+                        gy1 = by1 + y_ini
+                        gx2 = bx2 + x_ini
+                        gy2 = by2 + y_ini
+                        cajas_brutas.append([gx1, gy1, gx2 - gx1, gy2 - gy1])
+                        scores.append(conf)
+                        clases.append(c_id)
+            except Exception as e:
+                logger.debug(f"[SAHI] Error en inferencia de recorte: {e}")
+
+        if not cajas_brutas:
+            return []
+
+        # 3. Non-Maximum Suppression (NMS) multi-escala
+        indices = cv2.dnn.NMSBoxes(cajas_brutas, scores, score_threshold=self.confianza_minima, nms_threshold=0.45)
+
+        detecciones = []
+        if len(indices) > 0:
+            for idx in indices.flatten():
+                x, y, w, h = cajas_brutas[idx]
+                x1, y1, x2, y2 = x, y, x + w, y + h
+                clase_id = clases[idx]
+                confianza = scores[idx]
+
+                if self.es_modo_13clases:
+                    nombre_clase = self.NOMBRES_CLASES_DEFECTO.get(clase_id, f"Clase_{clase_id}")
+                    es_sano = clase_id in (2, 9) or "Bueno" in nombre_clase
+                else:
+                    nombre_clase = self.NOMBRES_CLASES_TRICLASE.get(clase_id, f"Clase_{clase_id}")
+                    es_sano = clase_id in (0, 1) or "Bueno" in nombre_clase
+
+                x_center, y_center = calcular_centroide((x1, y1, x2, y2))
+                canal = asignar_canal(x_center)
+
+                det_dict = {
+                    "clase_id": clase_id,
+                    "nombre_clase": nombre_clase,
+                    "confianza": round(confianza, 2),
+                    "caja": (x1, y1, x2, y2),
+                    "centroide": (x_center, y_center),
+                    "x_center": x_center,
+                    "y_center": y_center,
+                    "canal": canal,
+                    "es_defecto": not es_sano,
+                }
+                if es_bottom:
+                    det_dict["es_camara_inferior"] = True
+                detecciones.append(det_dict)
+
+        return detecciones
+
     def _ejecutar_inferencia(self, frame: np.ndarray) -> List[Dict[str, Any]]:
         """Ejecuta YOLO optimizado con resolución adaptativa y mapeo espacial sobre la cámara superior."""
         if self.modo_simulado or self.modelo is None or str(self.fuente_video_top).lower() in ("demo", "simulado", "synthetic"):
             return self._simular_detecciones(frame.shape)
+
+        if self.modo_sahi:
+            return self._ejecutar_inferencia_sahi(frame, es_bottom=False)
 
         detecciones = []
         try:
@@ -1072,6 +1201,9 @@ class YOLODetector:
         """Inferencia para la cámara inferior (reverso / ventral)."""
         if self.modo_simulado or self.modelo is None or str(self.fuente_video_bottom).lower() in ("demo", "simulado", "synthetic"):
             return self._simular_detecciones_bottom(detecciones_top or [], frame.shape)
+
+        if self.modo_sahi:
+            return self._ejecutar_inferencia_sahi(frame, es_bottom=True)
 
         detecciones = []
         try:
@@ -1323,22 +1455,6 @@ class YOLODetector:
             else:
                 cv2.circle(frame_anotado, (cx, cy), 4, self.COLOR_SANO_BGR, -1, cv2.LINE_AA)
 
-        # Barra de estado superior para cámara esclava
-        h, w = frame_anotado.shape[:2]
-        header_h = min(36, h)
-        sub = frame_anotado[0:header_h, 0:w]
-        overlay = np.full_like(sub, (40, 45, 55))
-        cv2.addWeighted(overlay, 0.85, sub, 0.15, 0, sub)
-        cv2.putText(
-            frame_anotado,
-            "CÁMARA INFERIOR (VENTRAL - ESCLAVA) | SIN DISPARO DIRECTO",
-            (12, 23),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.40,
-            (220, 220, 220),
-            1,
-            cv2.LINE_AA,
-        )
         return frame_anotado
 
     def _dibujar_hud(
@@ -1349,25 +1465,12 @@ class YOLODetector:
         valvula_activa: bool,
         total_granos: int,
     ) -> None:
-        """Dibuja la barra de telemetría superior optimizada para máxima velocidad."""
-        h, w = frame.shape[:2]
-        header_h = min(36, h)
-        sub = frame[0:header_h, 0:w]
-        overlay = np.full_like(sub, (30, 25, 20))
-        cv2.addWeighted(overlay, 0.85, sub, 0.15, 0, sub)
-
-        if self.clasificacion_activa:
-            texto = f"FPS: {fps:.1f} | Latencia: {latencia_ms:.1f}ms | Granos: {total_granos}"
-            color_valvula = (0, 220, 0) if valvula_activa else (120, 120, 120)
-            estado_valvula = "ESP32: DISPARO" if valvula_activa else "ESP32: STANDBY"
-        else:
-            texto = f"FPS: {fps:.1f} | MODO: VISTA PREVIA DUAL (Inferencia en Espera)"
-            color_valvula = (120, 120, 120)
-            estado_valvula = "ESP32: STANDBY"
-
-        cv2.putText(frame, texto, (12, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.circle(frame, (w - 170, 18), 6, color_valvula, -1)
-        cv2.putText(frame, estado_valvula, (w - 155, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (220, 220, 220), 1, cv2.LINE_AA)
+        """
+        Telemetría integrada en la UI: La información de FPS, estado y conteo
+        se muestra en los badges flotantes nativos del HMI CustomTkinter,
+        por lo que no se añade ninguna barra opaca que obstruya la visión.
+        """
+        return
 
     def _generar_frame_sintetico(self) -> np.ndarray:
         """Genera un fondo sintético animado para la cámara superior (Master)."""

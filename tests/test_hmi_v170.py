@@ -372,7 +372,7 @@ class TestHMIV170(unittest.TestCase):
 
         # Verificar que el tiempo avanzó y las statcards se actualizaron
         self.assertGreater(self.app.gestor_tiempo.segundos_hoy, 0)
-        self.assertIn("grs", self.app.stat_granos.cget("text"))
+        self.assertIn("u", self.app.stat_granos.cget("text"))
         self.assertIn("kWh", self.app.stat_consumo.cget("text"))
         self.assertIn("66.7 %", self.app.stat_precision.cget("text"))
 

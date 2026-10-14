@@ -959,6 +959,7 @@ class GestorLotes:
         self.total_defectuosos: int = 0
         self.historial_latencias: List[float] = []
         self.historial_fps: List[float] = []
+        self._ids_granos_procesados: set = set()
 
         # Temporizador de monitoreo de inactividad
         self._monitoreando: bool = True
@@ -999,6 +1000,7 @@ class GestorLotes:
             self.total_granos = 0
             self.total_sanos = 0
             self.total_defectuosos = 0
+            self._ids_granos_procesados.clear()
             self.historial_latencias.clear()
             self.historial_fps.clear()
             logger.info(f"Lote iniciado: {self.id_lote_actual} (Modelo: {'13 Clases' if self.modelo_13_clases else 'Tri-clase'})")
@@ -1017,11 +1019,11 @@ class GestorLotes:
         latencia_ms: float,
     ) -> None:
         """
-        Registra el lote de detecciones del frame actual:
+        Registra el lote de detecciones del frame actual con garantía anti-duplicidad:
         - Inicia lote si no estaba activo y hay detecciones válidas.
         - Actualiza el tiempo del último grano visto para control de timeout.
         - Registra alarma si la latencia supera el límite.
-        - Acumula conteos de granos.
+        - Acumula conteos de granos exactamente UNA VEZ por grano rastreado.
         """
         # Validar alarma de hardware
         verificar_alarma_valvula(latencia_ms)
@@ -1044,36 +1046,58 @@ class GestorLotes:
                 self.historial_latencias.pop(0)
 
             for det in detecciones:
+                # 1. Garantía anti-duplicidad por grano físico rastreado
+                id_seg = det.get("id_seguimiento")
+                if id_seg is not None:
+                    if id_seg in self._ids_granos_procesados:
+                        continue
+                    self._ids_granos_procesados.add(id_seg)
+                elif det.get("es_nuevo") is False:
+                    continue
+
                 nombre = det.get("nombre_clase", "")
                 c_id = det.get("clase_id")
+                es_def = det.get("es_defecto")
+
+                # Determinar inequívocamente si la detección es un defecto o un grano sano
+                if es_def is True:
+                    es_defecto_real = True
+                elif es_def is False:
+                    es_defecto_real = False
+                else:
+                    if nombre in ("Arabica_Bueno", "Robusta_Bueno"):
+                        es_defecto_real = False
+                    elif nombre == "Grano_Defecto" or ("Bueno" not in nombre and nombre != ""):
+                        es_defecto_real = True
+                    elif self.modelo_13_clases:
+                        es_defecto_real = c_id not in (2, 9)
+                    else:
+                        es_defecto_real = c_id == 2
 
                 self.total_granos += 1
 
                 if self.modelo_13_clases:
-                    # Enfoque 13 Clases granular
+                    # Enfoque 13 Clases: Solo Arabica_Bueno (c_id=2) y Robusta_Bueno (c_id=9) son sanos
                     if nombre in self.conteo_crudo:
                         self.conteo_crudo[nombre] += 1
                     else:
                         self.conteo_crudo[nombre] = 1
 
-                    if nombre in self.SANAS_GENERICAS or c_id in (2, 9):
+                    if not es_defecto_real:
                         self.total_sanos += 1
                     else:
                         self.total_defectuosos += 1
                 else:
-                    # Enfoque Tri-clase (Arabica_Bueno, Robusta_Bueno, Grano_Defecto)
-                    if nombre in ("Arabica_Bueno", "Robusta_Bueno"):
-                        self.conteo_crudo[nombre] = self.conteo_crudo.get(nombre, 0) + 1
-                        self.total_sanos += 1
-                    elif c_id == 2:
-                        self.conteo_crudo["Arabica_Bueno"] = self.conteo_crudo.get("Arabica_Bueno", 0) + 1
-                        self.total_sanos += 1
-                    elif c_id == 9:
-                        self.conteo_crudo["Robusta_Bueno"] = self.conteo_crudo.get("Robusta_Bueno", 0) + 1
-                        self.total_sanos += 1
-                    else:
+                    # Enfoque Tri-clase: Arabica_Bueno, Robusta_Bueno, Grano_Defecto
+                    if es_defecto_real:
                         self.conteo_crudo["Grano_Defecto"] = self.conteo_crudo.get("Grano_Defecto", 0) + 1
                         self.total_defectuosos += 1
+                    else:
+                        if nombre == "Robusta_Bueno" or (not nombre and c_id == 1):
+                            self.conteo_crudo["Robusta_Bueno"] = self.conteo_crudo.get("Robusta_Bueno", 0) + 1
+                        else:
+                            self.conteo_crudo["Arabica_Bueno"] = self.conteo_crudo.get("Arabica_Bueno", 0) + 1
+                        self.total_sanos += 1
 
     def _bucle_monitoreo_inactividad(self) -> None:
         """Hilo en segundo plano para verificar expiración de lote por inactividad."""

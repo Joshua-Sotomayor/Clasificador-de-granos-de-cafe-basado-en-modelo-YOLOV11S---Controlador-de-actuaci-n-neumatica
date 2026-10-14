@@ -69,6 +69,7 @@ class GestorMetricas:
         self.latencia_actual_ms: float = 0.0
         self.historial_latencias: List[float] = []
         self.historial_fps: List[float] = []
+        self._ids_granos_procesados: set = set()
 
     def iniciar_sesion(self) -> None:
         """Inicia o reanuda el cronómetro de la sesión activa."""
@@ -101,6 +102,7 @@ class GestorMetricas:
             self.total_defectuosos = 0
             self.conteo_por_clase = {nombre: 0 for nombre in self.NOMBRES_CLASES.values()}
             self.conteo_por_defecto = {cat: 0 for cat in self.CATEGORIAS_DEFECTOS}
+            self._ids_granos_procesados.clear()
 
             self.fps_actual = 0.0
             self.latencia_actual_ms = 0.0
@@ -114,7 +116,7 @@ class GestorMetricas:
         latencia_ms: float
     ) -> None:
         """
-        Registra un lote de detecciones del frame actual.
+        Registra un lote de detecciones del frame actual con garantía anti-duplicidad.
         
         :param detecciones: Lista de diccionarios con 'clase_id', 'nombre_clase', 'confianza', etc.
         :param fps: FPS instantáneo del detector.
@@ -133,8 +135,17 @@ class GestorMetricas:
             self.historial_latencias.append(latencia_ms)
 
             for det in detecciones:
+                id_seg = det.get("id_seguimiento")
+                if id_seg is not None:
+                    if id_seg in self._ids_granos_procesados:
+                        continue
+                    self._ids_granos_procesados.add(id_seg)
+                elif det.get("es_nuevo") is False:
+                    continue
+
                 clase_id = det.get("clase_id")
                 nombre_clase = det.get("nombre_clase")
+                es_defecto = det.get("es_defecto")
 
                 if nombre_clase is None and clase_id in self.NOMBRES_CLASES:
                     nombre_clase = self.NOMBRES_CLASES[clase_id]
@@ -146,9 +157,17 @@ class GestorMetricas:
                 self.conteo_por_clase[nombre_clase] = self.conteo_por_clase.get(nombre_clase, 0) + 1
 
                 # Clasificar en Sano o Defectuoso
-                if clase_id in self.CLASES_SANAS or nombre_clase in self.CLASES_SANAS:
-                    self.total_sanos += 1
-                else:
+                if es_defecto is None:
+                    if nombre_clase == "Grano_Defecto":
+                        es_defecto = True
+                    elif nombre_clase in ("Arabica_Bueno", "Robusta_Bueno"):
+                        es_defecto = False
+                    elif clase_id in (2, 9) and "Bueno" in nombre_clase:
+                        es_defecto = False
+                    else:
+                        es_defecto = True
+
+                if es_defecto:
                     self.total_defectuosos += 1
                     # Extraer categoría de defecto (e.g. "Arabica_Brocado" -> "Brocado")
                     categoria = self._extraer_categoria_defecto(nombre_clase)
@@ -156,6 +175,8 @@ class GestorMetricas:
                         self.conteo_por_defecto[categoria] += 1
                     else:
                         self.conteo_por_defecto[categoria] = 1
+                else:
+                    self.total_sanos += 1
 
     def _extraer_categoria_defecto(self, nombre_clase: str) -> str:
         """Normaliza el nombre de la clase al tipo genérico de defecto."""

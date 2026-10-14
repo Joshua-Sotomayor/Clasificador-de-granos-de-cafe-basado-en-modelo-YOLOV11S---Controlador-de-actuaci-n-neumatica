@@ -461,7 +461,7 @@ class DashboardCustomTkinter(ctk.CTk):
         # 2. Selector Modelos en Dashboard
         self.btn_modelos_dash = ctk.CTkOptionMenu(
             self.barra_izq_dashboard,
-            values=["Tri-clase", "13 Clases"],
+            values=["Tri-clase", "13 Clases", "Tri-clase + SAHI", "13 Clases + SAHI"],
             command=self._al_conmutar_modelo,
             width=210,
             **self.config_opt_superior,
@@ -526,7 +526,7 @@ class DashboardCustomTkinter(ctk.CTk):
         # 3. Selector Modelos en Analíticas
         self.btn_modelos_analiticas = ctk.CTkOptionMenu(
             self.barra_izq_analiticas,
-            values=["Tri-clase", "13 Clases"],
+            values=["Tri-clase", "13 Clases", "Tri-clase + SAHI", "13 Clases + SAHI"],
             command=self._al_conmutar_modelo,
             width=210,
             **self.config_opt_superior,
@@ -1541,26 +1541,27 @@ class DashboardCustomTkinter(ctk.CTk):
             )
 
     def _al_conmutar_modelo(self, seleccion: str) -> None:
-        """Conmuta globalmente el modelo de IA para ambas cámaras."""
+        """Conmuta globalmente el modelo de IA para ambas cámaras (Tri-clase / 13 Clases, con o sin SAHI)."""
         es_13 = "13" in seleccion
+        es_sahi = "SAHI" in seleccion
         if hasattr(self.detector, "cambiar_modelo"):
-            self.detector.cambiar_modelo(usar_13_clases=es_13)
-        self.gestor_lotes.configurar_modelo(modelo_13_clases=es_13, modo_sahi=False)
+            self.detector.cambiar_modelo(usar_13_clases=es_13, modo_sahi=es_sahi)
+        self.gestor_lotes.configurar_modelo(modelo_13_clases=es_13, modo_sahi=es_sahi)
 
         # Sincronizar ambos selectores
-        nombre_modelo = "13 Clases" if es_13 else "Tri-clase"
-        self.btn_modelos_dash.set(nombre_modelo)
-        self.btn_modelos_analiticas.set(nombre_modelo)
+        self.btn_modelos_dash.set(seleccion)
+        self.btn_modelos_analiticas.set(seleccion)
 
         # Sincronizar switch de compatibilidad
+        sahi_tag = " + SAHI" if es_sahi else ""
         if es_13:
             self.switch_modelo.select()
-            self.switch_modelo.configure(text="13 Clases")
+            self.switch_modelo.configure(text=f"13 Clases{sahi_tag}")
         else:
             self.switch_modelo.deselect()
-            self.switch_modelo.configure(text="Tri-clase")
+            self.switch_modelo.configure(text=f"Tri-clase{sahi_tag}")
 
-        self.db_manager.registrar_log_local("INFO", f"Modelo de inferencia actualizado a: {nombre_modelo}.")
+        self.db_manager.registrar_log_local("INFO", f"Modelo de inferencia actualizado a: {seleccion}.")
         self._actualizar_grafico_reactivo()
 
     def _al_cambiar_posicion_camaras(self, seleccion: str) -> None:
@@ -1717,16 +1718,24 @@ class DashboardCustomTkinter(ctk.CTk):
             kwh = (seg_hoy / 3600.0) * float(os.getenv("HARDWARE_POWER_KW", "0.5"))
             self.stat_consumo.configure(text=f"{kwh:.2f} kWh")
 
-            # 3. Estadísticas de granos
+            # 3. Estadísticas de granos (Solo unidades, proporción de buenos (Arabica_Bueno + Robusta_Bueno) / total)
             tot_granos = getattr(self.gestor_lotes, "total_granos", 0)
-            tot_sanos = getattr(self.gestor_lotes, "total_sanos", 0)
             if tot_granos == 0 and hasattr(self, "metricas"):
                 tot_granos = getattr(self.metricas, "total_granos", 0)
-                tot_sanos = getattr(self.metricas, "total_sanos", 0)
-            peso_gr = tot_granos * 0.18  # ~0.18 gramos por grano de café oro
-            calidad = (tot_sanos / tot_granos * 100.0) if tot_granos > 0 else 100.0
-            self.stat_granos.configure(text=f"{int(peso_gr)} grs")
-            self.stat_precision.configure(text=f"{calidad:.1f} %")
+
+            conteo_crudo = getattr(self.gestor_lotes, "conteo_crudo", {})
+            if not any(conteo_crudo.values()) and hasattr(self, "metricas"):
+                conteo_crudo = getattr(self.metricas, "conteo_por_clase", conteo_crudo)
+
+            ar_b = conteo_crudo.get("Arabica_Bueno", 0)
+            ro_b = conteo_crudo.get("Robusta_Bueno", 0)
+            granos_buenos = ar_b + ro_b
+            proporcion_buenos = (granos_buenos / tot_granos * 100.0) if tot_granos > 0 else 100.0
+
+            # Tarjeta de granos: estrictamente unidades contabilizadas (cero cálculo de peso)
+            self.stat_granos.configure(text=f"{tot_granos} u")
+            # Segunda fila: Proporción exacta de granos buenos sobre el total
+            self.stat_precision.configure(text=f"{proporcion_buenos:.1f} %")
 
             # 4. Rendimiento promedio
             self.stat_fps.configure(text=f"{int(round(self._fps_actual))} FPS")
