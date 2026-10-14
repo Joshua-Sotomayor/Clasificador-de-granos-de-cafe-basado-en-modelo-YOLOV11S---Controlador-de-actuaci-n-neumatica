@@ -960,6 +960,10 @@ class YOLODetector:
             except queue.Full:
                 pass
 
+            with self._lock:
+                self._ultimo_frame_top_render = frame_top_anotado
+                self._ultimo_frame_bottom_render = frame_bottom_anotado
+
             # Controlar tasa de captura a ~30 FPS
             tiempo_trabajo = time.perf_counter() - t_inicio
             tiempo_dormir = max(0.001, (1.0 / 30.0) - tiempo_trabajo)
@@ -1531,3 +1535,16 @@ class YOLODetector:
         dibujado_top = self._dibujar_detecciones(frame_top, dets_fused)
         dibujado_bot = self._dibujar_detecciones_inferior(frame_bottom, dets_bot)
         return dets_fused, dibujado_top, dibujado_bot
+
+    def obtener_frame_renderizado_dual(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], float]:
+        """Devuelve los fotogramas anotados más recientes de ambas cámaras y su latencia de inferencia."""
+        with self._lock:
+            top = self._ultimo_frame_top_render.copy() if hasattr(self, "_ultimo_frame_top_render") and self._ultimo_frame_top_render is not None else None
+            bot = self._ultimo_frame_bottom_render.copy() if hasattr(self, "_ultimo_frame_bottom_render") and self._ultimo_frame_bottom_render is not None else None
+            lat = getattr(self, "_latencia_inferencia_ms", 0.0)
+        return top, bot, lat
+
+    def obtener_frame_renderizado(self) -> Optional[np.ndarray]:
+        """Devuelve el fotograma superior renderizado más reciente."""
+        top, _, _ = self.obtener_frame_renderizado_dual()
+        return top

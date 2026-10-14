@@ -57,6 +57,19 @@ ROJO_HOVER     = "#96281B"
 AMBAR_RESET    = "#B8860B"   # Ámbar industrial para RESET (convención HMI)
 AMBAR_HOVER    = "#8F6A08"
 
+# Tonos oscurecidos para modo bloqueado (disabled) evidente
+VERDE_BLOQUEADO     = "#0F3D1E"   # Verde oscuro apagado para botón M bloqueado
+VERDE_BLOQUEADO_TXT = "#557A60"   # Texto tenue para botón M bloqueado
+ROJO_BLOQUEADO      = "#4A1510"   # Rojo oscuro apagado para botón P bloqueado
+ROJO_BLOQUEADO_TXT  = "#804A45"   # Texto tenue para botón P bloqueado
+AMBAR_BLOQUEADO     = "#3E2D03"   # Ámbar oscuro apagado para botón R bloqueado
+AMBAR_BLOQUEADO_TXT = "#7A6840"   # Texto tenue para botón R bloqueado
+
+# Celeste para botón de Marcha en estado PARO (Reanudar)
+CELESTE_REANUDAR    = "#1E88E5"   # Celeste industrial
+CELESTE_HOVER       = "#1976D2"
+CELESTE_BORDE       = "#64B5F6"
+
 GRIS_FONDO     = "#E9ECE8"   # Fondo general (gris verdoso muy claro)
 GRIS_PANEL     = "#F7F8F7"   # Superficie de paneles
 GRIS_SUAVE     = "#DDE2DE"   # Controles secundarios / inactivos
@@ -365,6 +378,10 @@ class DashboardCustomTkinter(ctk.CTk):
         self._bucle_video_activo = True
         self._id_after_bucle = self.after(30, self._bucle_actualizacion_video)
 
+        # Iniciar bucle de actualización periódica de analíticas (1 Hz)
+        self._bucle_analiticas_activo = True
+        self._id_after_analiticas = self.after(1000, self._bucle_actualizacion_analiticas)
+
     # =========================================================================
     # BARRA SUPERIOR CONTEXTUAL DINÁMICA
     # =========================================================================
@@ -430,7 +447,7 @@ class DashboardCustomTkinter(ctk.CTk):
             width=230,
             **self.config_opt_superior,
         )
-        self.btn_posicion.set("Cambiar Posición  ▾")
+        self.btn_posicion.set("Cambiar Posición")
         self.btn_posicion.grid(row=0, column=0, sticky="ew", padx=(0, 10))
 
         # 2. Selector Modelos en Dashboard
@@ -441,7 +458,7 @@ class DashboardCustomTkinter(ctk.CTk):
             width=210,
             **self.config_opt_superior,
         )
-        self.btn_modelos_dash.set("Modelos  ▾")
+        self.btn_modelos_dash.set("Modelos")
         self.btn_modelos_dash.grid(row=0, column=1, sticky="ew", padx=10)
 
         # 3. Botón ↕ Alternar Vista de Cámara
@@ -506,7 +523,7 @@ class DashboardCustomTkinter(ctk.CTk):
             width=210,
             **self.config_opt_superior,
         )
-        self.btn_modelos_analiticas.set("Modelos  ▾")
+        self.btn_modelos_analiticas.set("Modelos")
         self.btn_modelos_analiticas.grid(row=0, column=2, sticky="ew", padx=(10, 20))
 
     def _crear_bloque_izq_registros(self) -> None:
@@ -554,6 +571,7 @@ class DashboardCustomTkinter(ctk.CTk):
         self.lbl_lotes_registros.place(relx=0.5, rely=0.5, anchor="center")
 
     def cambiar_pagina(self, nombre: str) -> None:
+        self._pagina_actual = nombre
         for pagina in self._paginas.values():
             pagina.grid_remove()
         for barra in self._barras_izq.values():
@@ -573,8 +591,8 @@ class DashboardCustomTkinter(ctk.CTk):
         # Actualizar datos si se entra a analíticas o registros
         self._actualizar_indicador_bd_y_lotes()
         if nombre == "Analíticas":
-            self._actualizar_grafico_reactivo()
             self._actualizar_tarjetas_estadisticas()
+            self._actualizar_grafico_reactivo()
         elif nombre == "Registros":
             self._poblar_tabla_historial()
             self._cargar_consola_logs()
@@ -858,10 +876,10 @@ class DashboardCustomTkinter(ctk.CTk):
     def _crear_area_grafico_analiticas(self) -> None:
         self.frame_grafico_analiticas = ctk.CTkFrame(
             self.pagina_analiticas,
-            fg_color=GRIS_OSCURO,
+            fg_color=GRIS_PANEL,
             corner_radius=15,
             border_width=2,
-            border_color=VERDE_CLARO,
+            border_color=GRIS_BORDE,
             width=634,
             height=619,
         )
@@ -875,20 +893,20 @@ class DashboardCustomTkinter(ctk.CTk):
             self.frame_grafico_analiticas,
             text="Frecuencia / Categoría",
             font=("Arial", 24, "bold"),
-            text_color=TEXTO_CLARO,
+            text_color=GRIS_TEXTO,
         ).place(relx=0.5, rely=0.065, anchor="center")
 
-        # Figura y lienzo reactivo de Matplotlib incrustado
-        self.fig_analiticas = Figure(figsize=(5.6, 4.8), dpi=100, facecolor=GRIS_OSCURO)
+        # Figura y lienzo reactivo de Matplotlib incrustado en tema claro
+        self.fig_analiticas = Figure(figsize=(5.6, 4.8), dpi=100, facecolor=GRIS_PANEL)
         self.ax_analiticas = self.fig_analiticas.add_subplot(111)
-        self.ax_analiticas.set_facecolor(GRIS_OSCURO)
+        self.ax_analiticas.set_facecolor("#FFFFFF")
         self.fig_analiticas.tight_layout(pad=2.0)
 
         self.canvas_analiticas = FigureCanvasTkAgg(
             self.fig_analiticas, master=self.frame_grafico_analiticas
         )
         self.widget_canvas_analiticas = self.canvas_analiticas.get_tk_widget()
-        self.widget_canvas_analiticas.configure(bg=GRIS_OSCURO, highlightthickness=0)
+        self.widget_canvas_analiticas.configure(bg=GRIS_PANEL, highlightthickness=0)
         self.widget_canvas_analiticas.place(relx=0.5, rely=0.55, anchor="center", width=580, height=480)
 
     def _crear_panel_estadisticas(self) -> None:
@@ -1060,7 +1078,7 @@ class DashboardCustomTkinter(ctk.CTk):
         return fila
 
     def _crear_tabla_historial(self, padre: ctk.CTkFrame) -> ctk.CTkFrame:
-        COLUMNAS = ["Fecha", "N° de Lote", "Granos Totales", "G buenos (N)", "G buenos (%)", "Tiempo (min)"]
+        COLUMNAS = ["Fecha", "N°", "Granos Totales", "G buenos (N)", "GB A/R (%)", "Tiempo (min)"]
         ANCHOS = [185, 160, 210, 200, 205, 165]
 
         tabla = ctk.CTkFrame(
@@ -1262,9 +1280,15 @@ class DashboardCustomTkinter(ctk.CTk):
 
         if nuevo_estado == "STANDBY":
             self.lbl_estado_maquina.configure(text="ESTADO: STANDBY", text_color=GRIS_MEDIO)
-            self.btn_marcha.configure(state="normal", text="M", fg_color=VERDE)
-            self.btn_paro.configure(state="disabled", fg_color=ROJO_PARO)
-            self.btn_reset.configure(state="disabled", text="R", fg_color=AMBAR_RESET)
+            self.btn_marcha.configure(
+                state="normal", text="M", fg_color=VERDE, hover_color=VERDE_HOVER, border_color=VERDE_HOVER, text_color="white"
+            )
+            self.btn_paro.configure(
+                state="disabled", text="P", fg_color=ROJO_BLOQUEADO, border_color=ROJO_BLOQUEADO, text_color=ROJO_BLOQUEADO_TXT
+            )
+            self.btn_reset.configure(
+                state="disabled", text="R", fg_color=AMBAR_BLOQUEADO, border_color=AMBAR_BLOQUEADO, text_color=AMBAR_BLOQUEADO_TXT
+            )
 
             # Controles de Trigger habilitados en reposo
             self.slider_trigger.configure(state="normal")
@@ -1277,9 +1301,15 @@ class DashboardCustomTkinter(ctk.CTk):
 
         elif nuevo_estado == "EN_MARCHA":
             self.lbl_estado_maquina.configure(text="ESTADO: EN MARCHA", text_color=VERDE)
-            self.btn_marcha.configure(state="disabled", text="M")
-            self.btn_paro.configure(state="normal", fg_color=ROJO_PARO)
-            self.btn_reset.configure(state="disabled")
+            self.btn_marcha.configure(
+                state="disabled", text="M", fg_color=VERDE_BLOQUEADO, border_color=VERDE_BLOQUEADO, text_color=VERDE_BLOQUEADO_TXT
+            )
+            self.btn_paro.configure(
+                state="normal", text="P", fg_color=ROJO_PARO, hover_color=ROJO_HOVER, border_color=ROJO_HOVER, text_color="white"
+            )
+            self.btn_reset.configure(
+                state="disabled", text="R", fg_color=AMBAR_BLOQUEADO, border_color=AMBAR_BLOQUEADO, text_color=AMBAR_BLOQUEADO_TXT
+            )
 
             # Inhibición estricta de calibración en marcha
             self.slider_trigger.configure(state="disabled")
@@ -1292,9 +1322,16 @@ class DashboardCustomTkinter(ctk.CTk):
 
         elif nuevo_estado == "PARO":
             self.lbl_estado_maquina.configure(text="ESTADO: PARO", text_color=AMBAR_RESET)
-            self.btn_marcha.configure(state="normal", text="M", fg_color=VERDE)  # Actúa como Reanudar
-            self.btn_paro.configure(state="disabled")
-            self.btn_reset.configure(state="normal", text="R", fg_color=AMBAR_RESET)
+            # Botón de Marcha en Celeste para Reanudar
+            self.btn_marcha.configure(
+                state="normal", text="M", fg_color=CELESTE_REANUDAR, hover_color=CELESTE_HOVER, border_color=CELESTE_BORDE, text_color="white"
+            )
+            self.btn_paro.configure(
+                state="disabled", text="P", fg_color=ROJO_BLOQUEADO, border_color=ROJO_BLOQUEADO, text_color=ROJO_BLOQUEADO_TXT
+            )
+            self.btn_reset.configure(
+                state="normal", text="R", fg_color=AMBAR_RESET, hover_color=AMBAR_HOVER, border_color=AMBAR_HOVER, text_color="white"
+            )
 
             # Controles de Trigger habilitados para calibrar con máquina en reposo
             self.slider_trigger.configure(state="normal")
@@ -1307,9 +1344,15 @@ class DashboardCustomTkinter(ctk.CTk):
 
         elif nuevo_estado == "BLOQUEO_SEGURIDAD":
             self.lbl_estado_maquina.configure(text="ALERTA: BLOQUEO DE SEGURIDAD", text_color=ROJO_PARO)
-            self.btn_marcha.configure(state="disabled")
-            self.btn_paro.configure(state="disabled")
-            self.btn_reset.configure(state="normal", text="R", fg_color=ROJO_PARO)
+            self.btn_marcha.configure(
+                state="disabled", text="M", fg_color=VERDE_BLOQUEADO, border_color=VERDE_BLOQUEADO, text_color=VERDE_BLOQUEADO_TXT
+            )
+            self.btn_paro.configure(
+                state="disabled", text="P", fg_color=ROJO_BLOQUEADO, border_color=ROJO_BLOQUEADO, text_color=ROJO_BLOQUEADO_TXT
+            )
+            self.btn_reset.configure(
+                state="normal", text="R", fg_color=ROJO_PARO, hover_color=ROJO_HOVER, border_color=ROJO_HOVER, text_color="white"
+            )
 
             self.slider_trigger.configure(state="disabled")
             self.btn_cancelar_trigger.configure(state="disabled")
@@ -1519,7 +1562,7 @@ class DashboardCustomTkinter(ctk.CTk):
 
     def _bucle_actualizacion_video(self) -> None:
         """Bucle periódico a 30-60 FPS para streaming visual sin congelamientos."""
-        if not self._bucle_video_activo:
+        if not getattr(self, "_bucle_video_activo", True):
             return
 
         try:
@@ -1529,14 +1572,40 @@ class DashboardCustomTkinter(ctk.CTk):
                 self._fps_actual = 0.9 * self._fps_actual + 0.1 * (1.0 / dt)
             self._ultimo_tiempo_frame = ahora
 
-            # Obtener frames de inferencia dual
+            # 1. Consumir el payload más reciente de la cola de salida de YOLODetector (descartando cuadros viejos)
+            payload = None
+            if self.detector and hasattr(self.detector, "cola_salida"):
+                try:
+                    while True:
+                        payload = self.detector.cola_salida.get_nowait()
+                except queue.Empty:
+                    pass
+
             frame_render = None
-            if hasattr(self.detector, "obtener_frame_renderizado_dual"):
+            if payload is not None:
+                if self.camara_vista_activa == "TOP":
+                    frame_render = payload.get("frame_top")
+                    if frame_render is None:
+                        frame_render = payload.get("frame_bgr")
+                else:
+                    frame_render = payload.get("frame_bottom")
+                    if frame_render is None:
+                        frame_render = payload.get("frame_top")
+
+                if "latencia_ms" in payload and payload["latencia_ms"] > 0:
+                    self._latencia_inferencia_actual = float(payload["latencia_ms"])
+                if "fps" in payload and payload["fps"] > 0:
+                    self._fps_actual = float(payload["fps"])
+
+            # 2. Fallback de acceso directo al detector si la cola no proveyó frame en este ciclo
+            if frame_render is None and hasattr(self.detector, "obtener_frame_renderizado_dual"):
                 frame_top, frame_bot, lat_ms = self.detector.obtener_frame_renderizado_dual()
-                self._latencia_inferencia_actual = lat_ms
-                frame_render = frame_top if self.camara_vista_activa == "TOP" else frame_bot
-            elif hasattr(self.detector, "obtener_frame_renderizado"):
-                frame_render = self.detector.obtener_frame_renderizado()
+                if frame_top is not None:
+                    self._latencia_inferencia_actual = lat_ms
+                    if self.camara_vista_activa == "TOP":
+                        frame_render = frame_top
+                    else:
+                        frame_render = frame_bot if frame_bot is not None else frame_top
 
             if frame_render is not None:
                 # Redimensionar exactamente a 640x640 px para respetar el contenedor de HMI.py
@@ -1548,6 +1617,7 @@ class DashboardCustomTkinter(ctk.CTk):
                 frame_rgb = cv2.cvtColor(frame_render, cv2.COLOR_BGR2RGB)
                 img = Image.fromarray(frame_rgb)
                 img_tk = ImageTk.PhotoImage(image=img)
+                self.lbl_video_display.image = img_tk  # Referencia persistente contra garbage collection
                 self.lbl_video_display.imgtk = img_tk
                 self.lbl_video_display.configure(image=img_tk)
 
@@ -1560,6 +1630,21 @@ class DashboardCustomTkinter(ctk.CTk):
 
         # Agendar siguiente fotograma (~33 ms)
         self._id_after_bucle = self.after(33, self._bucle_actualizacion_video)
+
+    def _bucle_actualizacion_analiticas(self) -> None:
+        """Bucle periódico a 1 Hz para mantener actualizadas las 4 StatCards y gráfica en tiempo real."""
+        if not getattr(self, "_bucle_analiticas_activo", True):
+            return
+
+        try:
+            self._actualizar_tarjetas_estadisticas()
+            self._actualizar_indicador_bd_y_lotes()
+            if getattr(self, "_pagina_actual", "Dashboard") == "Analíticas":
+                self._actualizar_grafico_reactivo()
+        except Exception as e:
+            logger.debug(f"Aviso en bucle de analíticas: {e}")
+
+        self._id_after_analiticas = self.after(1000, self._bucle_actualizacion_analiticas)
 
     def _actualizar_indicador_bd_y_lotes(self) -> None:
         """Actualiza el LED de MongoDB y el contador de lotes en la cabecera."""
@@ -1608,23 +1693,41 @@ class DashboardCustomTkinter(ctk.CTk):
             logger.debug(f"Error actualizando statcards: {e}")
 
     def _actualizar_grafico_reactivo(self) -> None:
-        """Dibuja la gráfica de barras horizontales adaptada al acero oscuro de HMI.py."""
+        """Dibuja la gráfica de barras horizontales adaptada al tema claro y con filtrado de variedad."""
         if not hasattr(self, "ax_analiticas") or self.ax_analiticas is None:
             return
 
         self.ax_analiticas.clear()
-        self.ax_analiticas.set_facecolor(GRIS_OSCURO)
+        self.ax_analiticas.set_facecolor("#FFFFFF")
+        self.fig_analiticas.set_facecolor(GRIS_PANEL)
 
         es_13 = getattr(self.detector, "es_modo_13clases", False)
-        orden = ORDEN_13 if es_13 else ORDEN_TRI
         conteo_crudo = getattr(self.gestor_lotes, "conteo_crudo", {})
 
+        if es_13:
+            total_ar = sum(cant for clase, cant in conteo_crudo.items() if "Arabica" in clase)
+            total_ro = sum(cant for clase, cant in conteo_crudo.items() if "Robusta" in clase)
+
+            if total_ar > 0 and total_ro == 0:
+                # Solo se ha detectado variedad Arábica
+                orden = ["AR_B", "NEG_T", "BRO", "QUE", "APL", "AGR", "INM", "CON", "CAS"]
+            elif total_ro > 0 and total_ar == 0:
+                # Solo se ha detectado variedad Robusta
+                orden = ["RO_B", "NEG_P", "BRO", "QUE", "CAS"]
+            else:
+                # Ambas variedades detectadas o lote en cero
+                orden = list(ORDEN_13)
+            mapa_acronimos = ACRONIMOS_13
+        else:
+            orden = list(ORDEN_TRI)
+            mapa_acronimos = ACRONIMOS_TRI
+
         # Agrupar conteo por acrónimo
-        mapa_acronimos = ACRONIMOS_13 if es_13 else ACRONIMOS_TRI
         conteos_agrupados = {acro: 0 for acro in orden}
         for clase, cant in conteo_crudo.items():
             acro = mapa_acronimos.get(clase, "MAT" if es_13 else "DEF")
-            conteos_agrupados[acro] = conteos_agrupados.get(acro, 0) + cant
+            if acro in conteos_agrupados:
+                conteos_agrupados[acro] += cant
 
         valores = [conteos_agrupados[acro] for acro in orden]
         posiciones = np.arange(len(orden))
@@ -1641,14 +1744,15 @@ class DashboardCustomTkinter(ctk.CTk):
 
         self.ax_analiticas.barh(posiciones, valores, color=colores_barras, height=0.6, align="center")
         self.ax_analiticas.set_yticks(posiciones)
-        self.ax_analiticas.set_yticklabels(orden, color=TEXTO_CLARO, fontsize=12, fontweight="bold")
-        self.ax_analiticas.tick_params(axis="x", colors=TEXTO_CLARO, labelsize=10)
-        self.ax_analiticas.tick_params(axis="y", colors=TEXTO_CLARO)
+        self.ax_analiticas.set_yticklabels(orden, color=GRIS_TEXTO, fontsize=12, fontweight="bold")
+        self.ax_analiticas.tick_params(axis="x", colors=GRIS_TEXTO, labelsize=10)
+        self.ax_analiticas.tick_params(axis="y", colors=GRIS_TEXTO)
 
-        # Ajuste de espinas a blanco/claro
+        # Rejilla sutil horizontal y espinas en gris borde
+        self.ax_analiticas.grid(axis="x", color="#E9ECE8", linestyle="--", alpha=0.9)
         for spine in self.ax_analiticas.spines.values():
-            spine.set_color(TEXTO_CLARO)
-            spine.set_linewidth(1.5)
+            spine.set_color(GRIS_BORDE)
+            spine.set_linewidth(1.0)
 
         self.ax_analiticas.invert_yaxis()
         self.fig_analiticas.tight_layout()
@@ -1722,12 +1826,15 @@ class DashboardCustomTkinter(ctk.CTk):
             fila.pack(fill="x", pady=(0, 2))
             fila.pack_propagate(False)
 
+            id_limpio = str(item.get("id_lote", "")).replace("LOTE-", "")
+            prop_str = str(item.get("prop_gb_ar_ro", f"{item.get('porcentaje_calidad', 0.0):.1f}%"))
+
             valores = [
                 str(item.get("fecha", ""))[:16],
-                str(item.get("id_lote", "")),
+                id_limpio,
                 str(item.get("total_granos", 0)),
                 str(item.get("total_sanos", 0)),
-                f"{item.get('porcentaje_calidad', 0.0):.1f}%",
+                prop_str,
                 f"{item.get('tiempo_min', 0.0):.1f}",
             ]
             for val, w in zip(valores, self.anchos_columnas_historial):
@@ -1833,9 +1940,16 @@ class DashboardCustomTkinter(ctk.CTk):
     def _al_cerrar(self) -> None:
         """Cierre ordenado liberando recursos, hilos y cámara."""
         self._bucle_video_activo = False
+        self._bucle_analiticas_activo = False
         try:
             if hasattr(self, "_id_after_bucle") and self._id_after_bucle is not None:
                 self.after_cancel(self._id_after_bucle)
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "_id_after_analiticas") and self._id_after_analiticas is not None:
+                self.after_cancel(self._id_after_analiticas)
         except Exception:
             pass
 

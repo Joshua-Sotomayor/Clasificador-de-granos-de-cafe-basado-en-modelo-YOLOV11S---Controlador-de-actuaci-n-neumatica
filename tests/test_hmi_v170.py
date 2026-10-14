@@ -79,8 +79,11 @@ class TestHMIV170(unittest.TestCase):
         # 1. Estado inicial STANDBY
         self.assertEqual(self.app.estado_operativo, "STANDBY")
         self.assertEqual(self.app.btn_marcha.cget("state"), "normal")
+        self.assertEqual(self.app.btn_marcha.cget("fg_color"), VERDE)
         self.assertEqual(self.app.btn_paro.cget("state"), "disabled")
+        self.assertEqual(self.app.btn_paro.cget("fg_color"), "#4A1510")  # Rojo bloqueado evidente
         self.assertEqual(self.app.btn_reset.cget("state"), "disabled")
+        self.assertEqual(self.app.btn_reset.cget("fg_color"), "#3E2D03")  # Ámbar bloqueado evidente
         self.assertEqual(self.app.slider_trigger.cget("state"), "normal")
         self.assertEqual(self.app.btn_aplicar_trigger.cget("state"), "normal")
 
@@ -88,8 +91,11 @@ class TestHMIV170(unittest.TestCase):
         self.app._al_pulsar_marcha()
         self.assertEqual(self.app.estado_operativo, "EN_MARCHA")
         self.assertEqual(self.app.btn_marcha.cget("state"), "disabled")
+        self.assertEqual(self.app.btn_marcha.cget("fg_color"), "#0F3D1E")  # Verde bloqueado evidente
         self.assertEqual(self.app.btn_paro.cget("state"), "normal")
+        self.assertEqual(self.app.btn_paro.cget("fg_color"), ROJO_PARO)
         self.assertEqual(self.app.btn_reset.cget("state"), "disabled")
+        self.assertEqual(self.app.btn_reset.cget("fg_color"), "#3E2D03")
         # El slider y botón aplicar deben estar bloqueados
         self.assertEqual(self.app.slider_trigger.cget("state"), "disabled")
         self.assertEqual(self.app.btn_aplicar_trigger.cget("state"), "disabled")
@@ -100,8 +106,11 @@ class TestHMIV170(unittest.TestCase):
         self.app._al_pulsar_paro()
         self.assertEqual(self.app.estado_operativo, "PARO")
         self.assertEqual(self.app.btn_marcha.cget("state"), "normal")  # Actúa como Reanudar
+        self.assertEqual(self.app.btn_marcha.cget("fg_color"), "#1E88E5")  # ¡Celeste para Reanudar!
         self.assertEqual(self.app.btn_paro.cget("state"), "disabled")
+        self.assertEqual(self.app.btn_paro.cget("fg_color"), "#4A1510")
         self.assertEqual(self.app.btn_reset.cget("state"), "normal")
+        self.assertEqual(self.app.btn_reset.cget("fg_color"), AMBAR_RESET)
         # Slider reactivado para calibración con máquina detenida
         self.assertEqual(self.app.slider_trigger.cget("state"), "normal")
         self.assertEqual(self.app.btn_aplicar_trigger.cget("state"), "normal")
@@ -112,8 +121,11 @@ class TestHMIV170(unittest.TestCase):
         self.app._al_pulsar_reset()
         self.assertEqual(self.app.estado_operativo, "STANDBY")
         self.assertEqual(self.app.btn_marcha.cget("state"), "normal")
+        self.assertEqual(self.app.btn_marcha.cget("fg_color"), VERDE)
         self.assertEqual(self.app.btn_paro.cget("state"), "disabled")
+        self.assertEqual(self.app.btn_paro.cget("fg_color"), "#4A1510")
         self.assertEqual(self.app.btn_reset.cget("state"), "disabled")
+        self.assertEqual(self.app.btn_reset.cget("fg_color"), "#3E2D03")
         self.assertEqual(self.esp32_bridge._piloto_actual, "WHITE")
 
     def test_bloqueo_seguridad_por_corte_abrupto(self):
@@ -224,6 +236,97 @@ class TestHMIV170(unittest.TestCase):
         self.app.cambiar_pagina("Registros")
         self.assertTrue(bool(self.app.barra_izq_registros.grid_info()))
         self.assertFalse(bool(self.app.barra_izq_analiticas.grid_info()))
+
+    def test_logica_variedad_grafico_13_clases(self):
+        """
+        Verifica que en modo 13 Clases:
+        - Si solo se detectan granos de Arábica, la gráfica solo muestre clases de Arábica.
+        - Si solo se detectan granos de Robusta, solo muestre clases de Robusta.
+        - Si se detectan ambos, muestre las 13 clases.
+        """
+        self.detector.es_modo_13clases = True
+
+        # Caso 1: Solo Arábica
+        self.app.gestor_lotes.conteo_crudo = {"Arabica_Bueno": 50, "Arabica_Brocado": 5}
+        self.app._actualizar_grafico_reactivo()
+        labels_1 = [label.get_text() for label in self.app.ax_analiticas.get_yticklabels()]
+        self.assertIn("AR_B", labels_1)
+        self.assertNotIn("RO_B", labels_1)
+        self.assertNotIn("NEG_P", labels_1)
+
+        # Caso 2: Solo Robusta
+        self.app.gestor_lotes.conteo_crudo = {"Robusta_Bueno": 40, "Robusta_Negro": 2}
+        self.app._actualizar_grafico_reactivo()
+        labels_2 = [label.get_text() for label in self.app.ax_analiticas.get_yticklabels()]
+        self.assertIn("RO_B", labels_2)
+        self.assertNotIn("AR_B", labels_2)
+        self.assertNotIn("NEG_T", labels_2)
+
+        # Caso 3: Ambas variedades presentes
+        self.app.gestor_lotes.conteo_crudo = {"Arabica_Bueno": 30, "Robusta_Bueno": 20}
+        self.app._actualizar_grafico_reactivo()
+        labels_3 = [label.get_text() for label in self.app.ax_analiticas.get_yticklabels()]
+        self.assertIn("AR_B", labels_3)
+        self.assertIn("RO_B", labels_3)
+
+    def test_columna_gb_ar_ro_y_limpieza_id_lote(self):
+        """
+        Verifica que la consulta y tabla de Historial calcule 'GB A/R (%)'
+        como 'X% / Y%' y que el identificador del lote no tenga el prefijo 'LOTE-'.
+        """
+        import numpy as np
+        resumen_test = {
+            "id_lote": "LOTE-20261013-999999",
+            "timestamp": "2026-10-13 20:00:00",
+            "modelo_activo": "13_clases",
+            "duracion_segundos": 120.0,
+            "duracion_formato": "00:02:00",
+            "consumo_kwh": 0.015,
+            "potencia_nominal_kw": 0.5,
+            "total_granos": 100,
+            "total_sanos": 100,
+            "total_defectuosos": 0,
+            "porcentaje_calidad": 100.0,
+            "latencia_promedio_ms": 3.2,
+            "fps_promedio": 30.0,
+            "conteo_crudo": {
+                "Arabica_Bueno": 90,
+                "Robusta_Bueno": 10,
+            },
+        }
+        self.db_manager.guardar_resumen_lote_sync(resumen_test)
+
+        historial = self.db_manager.obtener_historial_lotes(limite=5)
+        self.assertTrue(len(historial) > 0)
+        primer_lote = historial[0]
+        self.assertEqual(primer_lote.get("prop_gb_ar_ro"), "90% / 10%")
+
+        # Probar renderizado en tabla
+        self.app._poblar_tabla_historial()
+        filas = self.app.cuerpo_tabla_historial.winfo_children()
+        self.assertTrue(len(filas) > 0)
+
+    def test_extraccion_frame_video_y_fallback(self):
+        """
+        Verifica que _bucle_actualizacion_video extraiga y renderice
+        los fotogramas desde la cola_salida y desde el fallback.
+        """
+        import numpy as np
+        # 1. Simular fotograma BGR en cola
+        frame_dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+        self.detector.cola_salida.put({
+            "frame_top": frame_dummy,
+            "frame_bottom": frame_dummy,
+            "fps": 30.0,
+            "latencia_ms": 2.5,
+        })
+        self.app._bucle_actualizacion_video()
+        self.assertIsNotNone(self.app.lbl_video_display.image)
+
+        # 2. Fallback directo al detector
+        self.detector._ultimo_frame_top_render = frame_dummy
+        self.app._bucle_actualizacion_video()
+        self.assertIsNotNone(self.app.lbl_video_display.image)
 
 
 if __name__ == "__main__":

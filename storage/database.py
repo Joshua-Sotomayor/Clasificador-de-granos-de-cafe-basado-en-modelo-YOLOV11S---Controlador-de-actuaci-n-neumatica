@@ -401,6 +401,8 @@ class DatabaseManager:
         """Método de compatibilidad con código preexistente."""
         return self.guardar_lote_transaccional(resumen)
 
+    guardar_resumen_lote_sync = guardar_lote_transaccional
+
     def guardar_resumen_lote_async(
         self,
         resumen: Dict[str, Any],
@@ -649,7 +651,7 @@ class DatabaseManager:
         """
         query = (
             "SELECT id_lote, fecha_creacion, modelo_activo AS modelo, total_granos, total_sanos, "
-            "porcentaje_calidad, duracion_segundos, sync FROM lotes WHERE 1=1"
+            "porcentaje_calidad, duracion_segundos, sync, resumen_completo_json FROM lotes WHERE 1=1"
         )
         params: List[Any] = []
 
@@ -684,6 +686,23 @@ class DatabaseManager:
                     for f in filas:
                         dur_seg = float(f["duracion_segundos"] or 0)
                         dur_min = round(dur_seg / 60.0, 1)
+
+                        prop_ar_ro = "0% / 0%"
+                        try:
+                            resumen_raw = f["resumen_completo_json"]
+                            if resumen_raw:
+                                res_obj = json.loads(resumen_raw)
+                                conteo = res_obj.get("conteo_crudo", {})
+                                ar_b = int(conteo.get("Arabica_Bueno", 0))
+                                ro_b = int(conteo.get("Robusta_Bueno", 0))
+                                tot_b = ar_b + ro_b
+                                if tot_b > 0:
+                                    pct_ar = int(round((ar_b / tot_b) * 100))
+                                    pct_ro = 100 - pct_ar
+                                    prop_ar_ro = f"{pct_ar}% / {pct_ro}%"
+                        except Exception:
+                            pass
+
                         lotes.append({
                             "id_lote": f["id_lote"],
                             "fecha": str(f["fecha_creacion"])[:19],
@@ -691,6 +710,7 @@ class DatabaseManager:
                             "total_granos": int(f["total_granos"]),
                             "total_sanos": int(f["total_sanos"]),
                             "porcentaje_calidad": round(float(f["porcentaje_calidad"]), 1),
+                            "prop_gb_ar_ro": prop_ar_ro,
                             "tiempo_min": dur_min,
                             "sync": bool(f["sync"]),
                         })
