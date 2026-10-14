@@ -31,6 +31,7 @@ import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.ticker import MaxNLocator
 
 from core.detector import YOLODetector, calcular_desplazamiento_cinematico
 from core.metricas import GestorMetricas
@@ -98,33 +99,33 @@ HMI_WIDTH: int = int(os.getenv("HMI_WIDTH", "1280"))
 HMI_HEIGHT: int = int(os.getenv("HMI_HEIGHT", "800"))
 HMI_FULLSCREEN: bool = os.getenv("HMI_FULLSCREEN", "False").lower() in ("true", "1", "yes")
 
-# Mapeo estandarizado de acrónimos cortos para la gráfica
+# Mapeo estandarizado de acrónimos estructurados para la gráfica (Finca Alvizua)
 ACRONIMOS_13 = {
-    "Arabica_Bueno": "AR_B",
-    "Robusta_Bueno": "RO_B",
-    "Arabica_Negro": "NEG_T",
-    "Robusta_Negro": "NEG_P",
-    "Arabica_Brocado": "BRO",
-    "Robusta_Brocado": "BRO",
-    "Arabica_Quebrado": "QUE",
-    "Robusta_Quebrado": "QUE",
-    "Arabica_Aplastado": "APL",
-    "Arabica_Agrio": "AGR",
-    "Arabica_Inmaduro": "INM",
-    "Arabica_Concha": "CON",
-    "Arabica_Cereza": "CAS",
-    "Robusta_Cereza": "CAS",
-    "Grano_Flotador": "FLO",
-    "Materia_Extraña": "MAT",
+    "Arabica_Agrio": "A_AGR",
+    "Arabica_Brocado": "A_BRO",
+    "Arabica_Bueno": "A_BUE",
+    "Arabica_Cereza": "A_CER",
+    "Arabica_Concha": "A_CON",
+    "Arabica_Inmaduro": "A_INM",
+    "Arabica_Negro": "A_NEG",
+    "Arabica_Quebrado": "A_QUE",
+    "Robusta_Brocado": "R_BRO",
+    "Robusta_Bueno": "R_BUE",
+    "Robusta_Cereza": "R_CER",
+    "Robusta_Negro": "R_NEG",
+    "Robusta_Quebrado": "R_QUE",
 }
-ORDEN_13 = ["AR_B", "RO_B", "NEG_T", "NEG_P", "BRO", "QUE", "APL", "AGR", "INM", "CON", "CAS", "FLO", "MAT"]
+ORDEN_13 = [
+    "A_BUE", "R_BUE", "A_NEG", "R_NEG", "A_BRO", "R_BRO",
+    "A_QUE", "R_QUE", "A_AGR", "A_INM", "A_CON", "A_CER", "R_CER"
+]
 
 ACRONIMOS_TRI = {
-    "Arabica_Bueno": "AR_B",
-    "Robusta_Bueno": "RO_B",
-    "Grano_Defecto": "DEF",
+    "Arabica_Bueno": "A_BUE",
+    "Robusta_Bueno": "R_BUE",
+    "Grano_Defecto": "G_DEF",
 }
-ORDEN_TRI = ["AR_B", "RO_B", "DEF"]
+ORDEN_TRI = ["A_BUE", "R_BUE", "G_DEF"]
 
 
 # =========================================================================
@@ -641,7 +642,7 @@ class DashboardCustomTkinter(ctk.CTk):
         config_insignia = {
             "fg_color": GRIS_OSCURO_2,
             "text_color": VERDE_LED,
-            "corner_radius": 15,
+            "corner_radius": 5,
             "width": 90,
             "height": 30,
             "font": ("Consolas", 16, "bold"),
@@ -658,7 +659,7 @@ class DashboardCustomTkinter(ctk.CTk):
             font=("Arial", 11, "bold"),
             fg_color=GRIS_OSCURO_2,
             text_color=VERDE_CLARO,
-            corner_radius=10,
+            corner_radius=5,
             height=24,
         )
         self.lbl_camara_activa_badge.place(relx=0.04, rely=0.03, anchor="nw")
@@ -809,17 +810,22 @@ class DashboardCustomTkinter(ctk.CTk):
         frame_slider_grupo = ctk.CTkFrame(col_trigger, fg_color="transparent")
         frame_slider_grupo.pack(pady=10)
 
+        lat_inicial = getattr(self, "_latencia_guardada_ms", 12.5)
+
         self.lbl_valor_trigger = ctk.CTkLabel(
-            frame_slider_grupo, text="50%", font=("Arial", 16, "bold"), text_color=VERDE
+            frame_slider_grupo,
+            text=f"25 ms ({lat_inicial:.1f} ms)",
+            font=("Arial", 16, "bold"),
+            text_color=VERDE,
         )
         self.lbl_valor_trigger.pack(side="top", pady=(0, 5))
 
         self.slider_trigger = ctk.CTkSlider(
             frame_slider_grupo,
             orientation="vertical",
-            from_=0,
-            to=100,
-            number_of_steps=100,
+            from_=0.0,
+            to=25.0,
+            number_of_steps=50,
             fg_color=GRIS_SUAVE,
             progress_color=VERDE,
             button_color=VERDE,
@@ -831,10 +837,10 @@ class DashboardCustomTkinter(ctk.CTk):
             command=self._al_mover_slider_trigger,
         )
         self.slider_trigger.pack(side="top")
-        self.slider_trigger.set(50)
+        self.slider_trigger.set(lat_inicial)
 
         lbl_min = ctk.CTkLabel(
-            frame_slider_grupo, text="0%", font=("Arial", 14, "bold"), text_color=GRIS_MEDIO
+            frame_slider_grupo, text="0 ms", font=("Arial", 14, "bold"), text_color=GRIS_MEDIO
         )
         lbl_min.pack(side="top", pady=(5, 0))
 
@@ -902,20 +908,20 @@ class DashboardCustomTkinter(ctk.CTk):
             text="Frecuencia / Categoría",
             font=("Arial", 24, "bold"),
             text_color=GRIS_TEXTO,
-        ).place(relx=0.5, rely=0.065, anchor="center")
+        ).place(relx=0.5, rely=0.045, anchor="center")
 
-        # Figura y lienzo reactivo de Matplotlib incrustado en tema claro
-        self.fig_analiticas = Figure(figsize=(5.6, 4.8), dpi=100, facecolor=GRIS_PANEL)
+        # Figura y lienzo reactivo de Matplotlib incrustado en tema claro aprovechando todo el contenedor
+        self.fig_analiticas = Figure(figsize=(6.14, 5.30), dpi=100, facecolor=GRIS_PANEL)
         self.ax_analiticas = self.fig_analiticas.add_subplot(111)
         self.ax_analiticas.set_facecolor("#FFFFFF")
-        self.fig_analiticas.tight_layout(pad=2.0)
+        self.fig_analiticas.subplots_adjust(left=0.18, right=0.96, top=0.96, bottom=0.10)
 
         self.canvas_analiticas = FigureCanvasTkAgg(
             self.fig_analiticas, master=self.frame_grafico_analiticas
         )
         self.widget_canvas_analiticas = self.canvas_analiticas.get_tk_widget()
         self.widget_canvas_analiticas.configure(bg=GRIS_PANEL, highlightthickness=0)
-        self.widget_canvas_analiticas.place(relx=0.5, rely=0.55, anchor="center", width=580, height=480)
+        self.widget_canvas_analiticas.place(relx=0.5, rely=0.53, anchor="center", width=614, height=530)
 
     def _crear_panel_estadisticas(self) -> None:
         panel_estats = ctk.CTkFrame(
@@ -1039,6 +1045,19 @@ class DashboardCustomTkinter(ctk.CTk):
         caja_l = self._crear_caja_logs(contenido)
         caja_l.grid(row=3, column=0)
 
+    def _actualizar_estilo_segmented_button(self, seg_btn: ctk.CTkSegmentedButton) -> None:
+        """Asegura que el botón seleccionado tenga texto blanco para óptimo contraste visual."""
+        try:
+            seleccion = seg_btn.get()
+            if hasattr(seg_btn, "_buttons_dict"):
+                for k, btn in seg_btn._buttons_dict.items():
+                    if k == seleccion:
+                        btn.configure(text_color="white")
+                    else:
+                        btn.configure(text_color=GRIS_TEXTO)
+        except Exception:
+            pass
+
     def _crear_fila_filtros_historial(self, padre: ctk.CTkFrame) -> ctk.CTkFrame:
         fila = ctk.CTkFrame(padre, fg_color="transparent", width=1204, height=70)
         fila.pack_propagate(False)
@@ -1048,11 +1067,11 @@ class DashboardCustomTkinter(ctk.CTk):
 
         self.menu_cat_historial = ctk.CTkOptionMenu(
             grupo,
-            values=["Todos", "Tri-clase", "13 Clases"],
-            width=160,
+            values=["Todos", "Tri-clase", "13 Clases", "Tri-clase + SAHI", "13 Clases + SAHI"],
+            width=230,
             height=70,
-            font=("Arial", 24),
-            dropdown_font=("Arial", 24),
+            font=("Arial", 22),
+            dropdown_font=("Arial", 22),
             fg_color=VERDE,
             button_color=VERDE,
             button_hover_color=VERDE_CLARO,
@@ -1075,10 +1094,14 @@ class DashboardCustomTkinter(ctk.CTk):
             height=70,
             font=("Arial", 24),
             corner_radius=35,
-            command=lambda _: self._poblar_tabla_historial(),
+            command=lambda _: (
+                self._actualizar_estilo_segmented_button(self.seg_fecha_historial),
+                self._poblar_tabla_historial(),
+            ),
         )
         self.seg_fecha_historial.set("Hoy")
         self.seg_fecha_historial.pack(side="left")
+        self.after(50, lambda: self._actualizar_estilo_segmented_button(self.seg_fecha_historial))
 
         ctk.CTkLabel(
             fila, text="Historial", font=("Arial", 36, "bold"), text_color=GRIS_TEXTO
@@ -1150,10 +1173,14 @@ class DashboardCustomTkinter(ctk.CTk):
             height=70,
             font=("Arial", 24),
             corner_radius=35,
-            command=lambda _: self._cargar_consola_logs(),
+            command=lambda _: (
+                self._actualizar_estilo_segmented_button(self.seg_fecha_logs),
+                self._cargar_consola_logs(),
+            ),
         )
         self.seg_fecha_logs.set("Hoy")
         self.seg_fecha_logs.pack(side="left")
+        self.after(50, lambda: self._actualizar_estilo_segmented_button(self.seg_fecha_logs))
 
         ctk.CTkLabel(
             fila, text="LOGS", font=("Arial", 36, "bold"), text_color=GRIS_TEXTO
@@ -1470,40 +1497,36 @@ class DashboardCustomTkinter(ctk.CTk):
 
     def _al_mover_slider_trigger(self, valor: float) -> None:
         """
-        Mapea el slider (0..100) al margen inferior del 25% del frame (640..480 px)
-        o latencia proporcional (1.0..25.0 ms), previsualizando la línea sobre el visor.
+        Mapea el slider (0.0..25.0 ms) a la latencia de respuesta de la electroválvula neumática,
+        calculando el nuevo Y_trigger dinámico y previsualizándolo en el visor en tiempo real.
         """
-        self._porcentaje_slider_actual = int(round(valor))
-        self.lbl_valor_trigger.configure(text=f"{self._porcentaje_slider_actual}%")
-
-        # 0% = 640 px (base), 100% = 480 px (margen superior del 25%)
-        # Coordenada Y = 640 - (porcentaje * 1.6)
-        y_dinamico = int(round(640 - (self._porcentaje_slider_actual * 1.6)))
-        # Latencia equivalente: 1.0 ms + (porcentaje/100)*24.0 ms
-        lat_dinamica = round(1.0 + (self._porcentaje_slider_actual / 100.0) * 24.0, 1)
-
+        lat_dinamica = round(float(valor), 1)
         self._latencia_preview_ms = lat_dinamica
+        self.lbl_valor_trigger.configure(text=f"25 ms ({lat_dinamica:.1f} ms)")
+
         if hasattr(self.detector, "previsualizar_latencia_actuador"):
             self.detector.previsualizar_latencia_actuador(lat_dinamica)
-        elif hasattr(self.detector, "y_trigger_preview"):
-            self.detector.y_trigger_preview = y_dinamico
 
     def _al_pulsar_cancelar_trigger(self) -> None:
-        """Restaura el slider al valor guardado y descarta la previsualización."""
+        """Restaura el slider a la latencia guardada y descarta la previsualización."""
         if hasattr(self.detector, "cancelar_previsualizacion_latencia"):
             self.detector.cancelar_previsualizacion_latencia()
-        # Restaurar slider
-        self.slider_trigger.set(self._porcentaje_slider_actual)
-        self.lbl_valor_trigger.configure(text=f"{self._porcentaje_slider_actual}%")
+        # Restaurar slider y etiqueta
+        self.slider_trigger.set(self._latencia_guardada_ms)
+        self.lbl_valor_trigger.configure(text=f"25 ms ({self._latencia_guardada_ms:.1f} ms)")
 
     def _al_pulsar_aplicar_trigger(self) -> None:
-        """Despliega el modal táctil para confirmar la nueva calibración."""
-        y_dinamico = int(round(640 - (self._porcentaje_slider_actual * 1.6)))
+        """Despliega el modal táctil para confirmar la nueva calibración cinemática."""
+        y_dinamico = getattr(self.detector, "y_trigger_preview", None)
+        if y_dinamico is None:
+            y_dinamico = getattr(self.detector, "y_trigger", 501)
+        porcentaje = int(round((self._latencia_preview_ms / 25.0) * 100))
+
         self._modal_trigger = VentanaConfirmacionTrigger(
             parent=self,
             nueva_latencia_ms=self._latencia_preview_ms,
             nuevo_y_px=y_dinamico,
-            porcentaje_slider=self._porcentaje_slider_actual,
+            porcentaje_slider=porcentaje,
             callback_confirmar=self._confirmar_calibracion_trigger,
         )
 
@@ -1512,11 +1535,13 @@ class DashboardCustomTkinter(ctk.CTk):
         if hasattr(self.detector, "actualizar_latencia_actuador"):
             y_real = self.detector.actualizar_latencia_actuador(latencia_ms)
         else:
-            y_real = y_px or int(round(640 - (self._porcentaje_slider_actual * 1.6)))
+            y_real = y_px or int(round(640 - ((latencia_ms / 25.0) * 160)))
             self.detector.y_trigger = y_real
 
         self._latencia_guardada_ms = latencia_ms
         self._y_trigger_guardado_px = y_real
+        self.slider_trigger.set(latencia_ms)
+        self.lbl_valor_trigger.configure(text=f"25 ms ({latencia_ms:.1f} ms)")
         self.db_manager.registrar_log_local(
             "INFO", f"Nueva posición de trigger aplicada: Y = {y_real} px ({latencia_ms:.1f} ms)."
         )
@@ -1763,34 +1788,34 @@ class DashboardCustomTkinter(ctk.CTk):
 
             if total_ar > 0 and total_ro == 0:
                 # Solo se ha detectado variedad Arábica
-                orden = ["AR_B", "NEG_T", "BRO", "QUE", "APL", "AGR", "INM", "CON", "CAS"]
+                orden = ["A_BUE", "A_NEG", "A_BRO", "A_QUE", "A_AGR", "A_INM", "A_CON", "A_CER"]
             elif total_ro > 0 and total_ar == 0:
                 # Solo se ha detectado variedad Robusta
-                orden = ["RO_B", "NEG_P", "BRO", "QUE", "CAS"]
+                orden = ["R_BUE", "R_NEG", "R_BRO", "R_QUE", "R_CER"]
             else:
-                # Ambas variedades detectadas o lote en cero
+                # Ambas variedades detectadas o lote inicial
                 orden = list(ORDEN_13)
             mapa_acronimos = ACRONIMOS_13
         else:
             orden = list(ORDEN_TRI)
             mapa_acronimos = ACRONIMOS_TRI
 
-        # Agrupar conteo por acrónimo
+        # Agrupar conteo por acrónimo estructurado
         conteos_agrupados = {acro: 0 for acro in orden}
         for clase, cant in conteo_crudo.items():
-            acro = mapa_acronimos.get(clase, "MAT" if es_13 else "DEF")
+            acro = mapa_acronimos.get(clase, "G_DEF" if not es_13 else "A_BRO")
             if acro in conteos_agrupados:
                 conteos_agrupados[acro] += cant
 
         valores = [conteos_agrupados[acro] for acro in orden]
         posiciones = np.arange(len(orden))
 
-        # Colores de barras: Verde para buenos, ámbar/rojo para defectos
+        # Colores de barras: Verde para sanos, ámbar para defectos fitosanitarios/mecánicos, rojo para críticos
         colores_barras = []
         for acro in orden:
-            if acro in ("AR_B", "RO_B"):
+            if acro in ("A_BUE", "R_BUE"):
                 colores_barras.append(VERDE)
-            elif acro in ("BRO", "QUE", "APL"):
+            elif acro in ("A_BRO", "R_BRO", "A_QUE", "R_QUE", "A_CON", "A_INM"):
                 colores_barras.append(AMBAR_RESET)
             else:
                 colores_barras.append(ROJO_PARO)
@@ -1798,8 +1823,11 @@ class DashboardCustomTkinter(ctk.CTk):
         self.ax_analiticas.barh(posiciones, valores, color=colores_barras, height=0.6, align="center")
         self.ax_analiticas.set_yticks(posiciones)
         self.ax_analiticas.set_yticklabels(orden, color=GRIS_TEXTO, fontsize=12, fontweight="bold")
-        self.ax_analiticas.tick_params(axis="x", colors=GRIS_TEXTO, labelsize=10)
+        self.ax_analiticas.tick_params(axis="x", colors=GRIS_TEXTO, labelsize=11)
         self.ax_analiticas.tick_params(axis="y", colors=GRIS_TEXTO)
+
+        # Forzar estrictamente números enteros en el eje horizontal (unidades)
+        self.ax_analiticas.xaxis.set_major_locator(MaxNLocator(integer=True))
 
         # Rejilla sutil horizontal y espinas en gris borde
         self.ax_analiticas.grid(axis="x", color="#E9ECE8", linestyle="--", alpha=0.9)
@@ -1808,7 +1836,7 @@ class DashboardCustomTkinter(ctk.CTk):
             spine.set_linewidth(1.0)
 
         self.ax_analiticas.invert_yaxis()
-        self.fig_analiticas.tight_layout()
+        self.fig_analiticas.subplots_adjust(left=0.18, right=0.96, top=0.96, bottom=0.10)
         self.canvas_analiticas.draw()
 
     # =========================================================================

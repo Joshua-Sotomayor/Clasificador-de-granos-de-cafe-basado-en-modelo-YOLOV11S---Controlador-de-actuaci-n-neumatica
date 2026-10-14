@@ -177,17 +177,17 @@ class TestHMIV170(unittest.TestCase):
         """
         y_inicial = self.detector.y_trigger
 
-        # 1. Mover slider al 75%
-        self.app._al_mover_slider_trigger(75.0)
-        self.assertEqual(self.app.lbl_valor_trigger.cget("text"), "75%")
+        # 1. Mover slider a 15.0 ms
+        self.app._al_mover_slider_trigger(15.0)
+        self.assertIn("15.0 ms", self.app.lbl_valor_trigger.cget("text"))
         self.assertIsNotNone(self.detector.y_trigger_preview)
 
         # 2. Cancelar -> restaura estado anterior
         self.app._al_pulsar_cancelar_trigger()
         self.assertIsNone(self.detector.y_trigger_preview)
 
-        # 3. Mover slider a 60% y aplicar abriendo el modal
-        self.app._al_mover_slider_trigger(60.0)
+        # 3. Mover slider a 12.0 ms y aplicar abriendo el modal
+        self.app._al_mover_slider_trigger(12.0)
         self.app._al_pulsar_aplicar_trigger()
 
         modal = self.app._modal_trigger
@@ -250,24 +250,24 @@ class TestHMIV170(unittest.TestCase):
         self.app.gestor_lotes.conteo_crudo = {"Arabica_Bueno": 50, "Arabica_Brocado": 5}
         self.app._actualizar_grafico_reactivo()
         labels_1 = [label.get_text() for label in self.app.ax_analiticas.get_yticklabels()]
-        self.assertIn("AR_B", labels_1)
-        self.assertNotIn("RO_B", labels_1)
-        self.assertNotIn("NEG_P", labels_1)
+        self.assertIn("A_BUE", labels_1)
+        self.assertNotIn("R_BUE", labels_1)
+        self.assertNotIn("R_NEG", labels_1)
 
         # Caso 2: Solo Robusta
         self.app.gestor_lotes.conteo_crudo = {"Robusta_Bueno": 40, "Robusta_Negro": 2}
         self.app._actualizar_grafico_reactivo()
         labels_2 = [label.get_text() for label in self.app.ax_analiticas.get_yticklabels()]
-        self.assertIn("RO_B", labels_2)
-        self.assertNotIn("AR_B", labels_2)
-        self.assertNotIn("NEG_T", labels_2)
+        self.assertIn("R_BUE", labels_2)
+        self.assertNotIn("A_BUE", labels_2)
+        self.assertNotIn("A_NEG", labels_2)
 
         # Caso 3: Ambas variedades presentes
         self.app.gestor_lotes.conteo_crudo = {"Arabica_Bueno": 30, "Robusta_Bueno": 20}
         self.app._actualizar_grafico_reactivo()
         labels_3 = [label.get_text() for label in self.app.ax_analiticas.get_yticklabels()]
-        self.assertIn("AR_B", labels_3)
-        self.assertIn("RO_B", labels_3)
+        self.assertIn("A_BUE", labels_3)
+        self.assertIn("R_BUE", labels_3)
 
     def test_columna_gb_ar_ro_y_limpieza_id_lote(self):
         """
@@ -408,8 +408,8 @@ class TestHMIV170(unittest.TestCase):
         }
         self.app._actualizar_grafico_reactivo()
         labels_y = [t.get_text() for t in self.app.ax_analiticas.get_yticklabels()]
-        self.assertIn("AR_B", labels_y)
-        self.assertNotIn("RO_B", labels_y)
+        self.assertIn("A_BUE", labels_y)
+        self.assertNotIn("R_BUE", labels_y)
 
         # 2. Solo Robusta
         self.app.gestor_lotes.conteo_crudo = {
@@ -420,8 +420,8 @@ class TestHMIV170(unittest.TestCase):
         }
         self.app._actualizar_grafico_reactivo()
         labels_y = [t.get_text() for t in self.app.ax_analiticas.get_yticklabels()]
-        self.assertIn("RO_B", labels_y)
-        self.assertNotIn("AR_B", labels_y)
+        self.assertIn("R_BUE", labels_y)
+        self.assertNotIn("A_BUE", labels_y)
 
 
 if __name__ == "__main__":

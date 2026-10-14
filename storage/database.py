@@ -650,27 +650,37 @@ class DatabaseManager:
         Columnas: fecha, id_lote, total_granos, total_sanos, porcentaje_calidad, duracion_min
         """
         query = (
-            "SELECT id_lote, fecha_creacion, modelo_activo AS modelo, total_granos, total_sanos, "
+            "SELECT id_lote, COALESCE(timestamp, fecha_creacion) AS fecha_local, fecha_creacion, "
+            "modelo_activo AS modelo, modo_sahi, total_granos, total_sanos, "
             "porcentaje_calidad, duracion_segundos, sync, resumen_completo_json FROM lotes WHERE 1=1"
         )
         params: List[Any] = []
 
-        if filtro_modelo and str(filtro_modelo).lower() not in ("todos", "all", "none"):
-            query += " AND modelo_activo LIKE ?"
-            params.append(f"%{filtro_modelo}%")
+        if filtro_modelo and str(filtro_modelo).strip().lower() not in ("todos", "all", "none", ""):
+            fm_str = str(filtro_modelo).strip()
+            if "13" in fm_str:
+                query += " AND modelo_activo LIKE '%13%'"
+            elif "tri" in fm_str.lower():
+                query += " AND modelo_activo LIKE '%tri%'"
+
+            if "SAHI" in fm_str.upper():
+                query += " AND modo_sahi = 1"
+            elif fm_str in ("13 Clases", "Tri-clase"):
+                query += " AND modo_sahi = 0"
 
         ahora = datetime.now()
+        col_fecha = "COALESCE(timestamp, fecha_creacion)"
         if filtro_fecha == "Hoy":
             f_hoy = ahora.strftime("%Y-%m-%d 00:00:00")
-            query += " AND fecha_creacion >= ?"
+            query += f" AND {col_fecha} >= ?"
             params.append(f_hoy)
         elif filtro_fecha in ("Últimos 3 días", "Ultimos 3 dias"):
             f_3d = (ahora - timedelta(days=3)).strftime("%Y-%m-%d 00:00:00")
-            query += " AND fecha_creacion >= ?"
+            query += f" AND {col_fecha} >= ?"
             params.append(f_3d)
         elif filtro_fecha in ("Última semana", "Ultima semana", "Última Semana", "Ultima Semana"):
             f_7d = (ahora - timedelta(days=7)).strftime("%Y-%m-%d 00:00:00")
-            query += " AND fecha_creacion >= ?"
+            query += f" AND {col_fecha} >= ?"
             params.append(f_7d)
 
         query += " ORDER BY id DESC LIMIT ?;"
@@ -705,8 +715,9 @@ class DatabaseManager:
 
                         lotes.append({
                             "id_lote": f["id_lote"],
-                            "fecha": str(f["fecha_creacion"])[:19],
+                            "fecha": str(f["fecha_local"] or f["fecha_creacion"])[:19],
                             "modelo": f["modelo"],
+                            "modo_sahi": bool(f["modo_sahi"]),
                             "total_granos": int(f["total_granos"]),
                             "total_sanos": int(f["total_sanos"]),
                             "porcentaje_calidad": round(float(f["porcentaje_calidad"]), 1),
