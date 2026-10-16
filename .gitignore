@@ -48,3 +48,11 @@ storage/*.tmp
 # PlatformIO build outputs
 ESP32-Esclavo-MOPI/.pio/
 ESP32-Esclavo-MOPI/.vscode/
+
+# Archivos de documentación
+CONFIGURACION_HARDWARE.md
+estado del arte del proyecto - V1.md
+
+# Archivos de interfaz de usuario
+hmi.py
+hmi_2.py
