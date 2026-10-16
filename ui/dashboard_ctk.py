@@ -600,7 +600,7 @@ class DashboardCustomTkinter(ctk.CTk):
         # 2. Selector Modelos en Dashboard
         self.btn_modelos_dash = ctk.CTkOptionMenu(
             self.barra_izq_dashboard,
-            values=["Tri-clase", "13 Clases", "Tri-clase + SAHI", "13 Clases + SAHI"],
+            values=["Tri-clase", "13 Clases", "Tri-clase (SAHI)", "13 Clases (SAHI)"],
             command=self._al_conmutar_modelo,
             width=210,
             **self.config_opt_superior,
@@ -665,7 +665,7 @@ class DashboardCustomTkinter(ctk.CTk):
         # 3. Selector Modelos en Analíticas
         self.btn_modelos_analiticas = ctk.CTkOptionMenu(
             self.barra_izq_analiticas,
-            values=["Tri-clase", "13 Clases", "Tri-clase + SAHI", "13 Clases + SAHI"],
+            values=["Tri-clase", "13 Clases", "Tri-clase (SAHI)", "13 Clases (SAHI)"],
             command=self._al_conmutar_modelo,
             width=210,
             **self.config_opt_superior,

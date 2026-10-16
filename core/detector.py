@@ -728,6 +728,24 @@ class YOLODetector:
         """Alias para retrocompatibilidad, reconfigura la fuente superior."""
         self.cambiar_fuentes_video(nueva_fuente, self.fuente_video_bottom)
 
+    @staticmethod
+    def _probar_stream_real(cap: Any) -> bool:
+        """
+        Verifica si el objeto de captura realmente entrega un flujo dinámico de video en vivo
+        en lugar de una pantalla estática congelada o splash screen de driver virtual.
+        """
+        try:
+            ret1, f1 = cap.read()
+            if not ret1 or f1 is None:
+                return False
+            ret2, f2 = cap.read()
+            if not ret2 or f2 is None:
+                return False
+            diff = float(np.mean(np.abs(f1.astype(float) - f2.astype(float))))
+            return diff > 0.0
+        except Exception:
+            return False
+
     def _abrir_camaras(self) -> bool:
         """Abre ambas cámaras web con backend DirectShow en Windows para latencia mínima."""
         with self._camera_lock:
@@ -749,10 +767,19 @@ class YOLODetector:
                         print(f"[YOLODetector] Cámara superior {self.fuente_video_top} no disponible. Usando generador demo.")
                         self.fuente_video_top = "demo"
                         self._cap_top = None
+                    elif not self._probar_stream_real(self._cap_top):
+                        print(f"[YOLODetector] Cámara superior {self.fuente_video_top} no entrega video real (dispositivo virtual o sin señal). Usando generador demo.")
+                        self.fuente_video_top = "demo"
+                        try:
+                            self._cap_top.release()
+                        except Exception:
+                            pass
+                        self._cap_top = None
                     else:
                         self._cap_top.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolucion_captura[0])
                         self._cap_top.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolucion_captura[1])
                         self._cap_top.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                        self._ultimo_frame_top_real_ts = time.time()
                         print(f"[YOLODetector] Cámara superior (Maestro) {src_top} abierta exitosamente.")
                 except Exception as e:
                     print(f"[YOLODetector] Error al abrir cámara superior ({e}). Usando modo demo.")
@@ -777,10 +804,19 @@ class YOLODetector:
                         print(f"[YOLODetector] Cámara inferior {self.fuente_video_bottom} no disponible. Usando generador demo.")
                         self.fuente_video_bottom = "demo"
                         self._cap_bottom = None
+                    elif not self._probar_stream_real(self._cap_bottom):
+                        print(f"[YOLODetector] Cámara inferior {self.fuente_video_bottom} no entrega video real (dispositivo virtual o sin señal). Usando generador demo.")
+                        self.fuente_video_bottom = "demo"
+                        try:
+                            self._cap_bottom.release()
+                        except Exception:
+                            pass
+                        self._cap_bottom = None
                     else:
                         self._cap_bottom.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolucion_captura[0])
                         self._cap_bottom.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolucion_captura[1])
                         self._cap_bottom.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                        self._ultimo_frame_bottom_real_ts = time.time()
                         print(f"[YOLODetector] Cámara inferior (Esclavo) {src_bot} abierta exitosamente.")
                 except Exception as e:
                     print(f"[YOLODetector] Error al abrir cámara inferior ({e}). Usando modo demo.")
