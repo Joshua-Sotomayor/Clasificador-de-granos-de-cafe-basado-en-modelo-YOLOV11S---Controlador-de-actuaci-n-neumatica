@@ -16,7 +16,7 @@ __pycache__/
 artefactos_entrenamiento/
 instrucciones_SDD/
 
-# Datasets (imágenes y etiquetas procesadas)
+# Datasets (imagenes y etiquetas procesadas)
 dataset_bruto/
 dataset_yolo/images/
 dataset_yolo/labels/
@@ -49,10 +49,7 @@ storage/*.tmp
 ESP32-Esclavo-MOPI/.pio/
 ESP32-Esclavo-MOPI/.vscode/
 
-# Archivos de documentación
+# Archivos de documentacion
 CONFIGURACION_HARDWARE.md
 estado del arte del proyecto - V1.md
-
-# Archivos de interfaz de usuario
-hmi.py
-hmi_2.py
+Redaccion_Moppi/

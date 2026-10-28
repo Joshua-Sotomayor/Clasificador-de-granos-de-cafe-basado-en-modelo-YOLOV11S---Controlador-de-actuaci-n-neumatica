@@ -1,0 +1,12 @@
+# =====================================================================
+# Dependencias Legacy - Prototipo Historico Flet (MOPPI v1.0 - v1.1)
+# =====================================================================
+# NOTA: Estas dependencias son exclusivas para ejecutar el codigo archivado
+# en legacy/flet_ui/. NO son necesarias para el sistema en produccion.
+# =====================================================================
+
+flet>=0.21.0,<1.0.0
+matplotlib>=3.7.0
+numpy>=1.24.0
+opencv-python>=4.8.0
+Pillow>=9.0.0

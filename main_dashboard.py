@@ -1,7 +1,7 @@
 """
-Punto de Entrada Principal del Dashboard de Inferencia y Telemetría MOPPI
+Punto de Entrada Principal del Dashboard de Inferencia y Telemetria MOPPI
 Ejecuta la interfaz nativa en CustomTkinter para streaming ultra-fluido (30-60 FPS)
-sin congelamientos, y permite usar Flet mediante el argumento --flet si se desea.
+sin congelamientos, con soporte estereo de doble camara y control industrial.
 """
 
 import os
@@ -13,12 +13,13 @@ load_dotenv()
 
 from core.detector import YOLODetector
 from core.metricas import GestorMetricas
-from storage.database import DatabaseManager, GestorLotes, MongoManager
+from storage.database import DatabaseManager, GestorLotes
 from hardware.serial_bridge import ESP32Bridge
+from ui import DashboardCustomTkinter
 
 
 def main():
-    """Función de arranque principal."""
+    """Funcion de arranque principal de la HMI Industrial."""
     ruta_default = "models/best.pt" if os.path.exists("models/best.pt") else "best.pt"
     ruta_modelo = os.getenv("MODEL_PATH", ruta_default)
     ruta_modelo_13clases = os.getenv("MODEL_13CLASES_PATH", "models/best_13clases.pt")
@@ -33,14 +34,14 @@ def main():
     mongo_uri = os.getenv("MONGO_URI", "")
 
     print("=" * 60)
-    print("Iniciando MOPPI - Sistema de Clasificación Óptica de Café")
+    print("Iniciando MOPPI - Sistema de Clasificacion Optica de Cafe")
     print(f"Modelo Tri-Clase: {ruta_modelo}")
     print(f"Modelo 13 Clases: {ruta_modelo_13clases}")
-    print(f"Cámara Superior: {fuente_top} | Cámara Inferior: {fuente_bot}")
+    print(f"Camara Superior: {fuente_top} | Camara Inferior: {fuente_bot}")
     print(f"Potencia Nominal: {potencia_kw} kW")
     print("=" * 60)
 
-    # 1. Inicialización de componentes desacoplados
+    # 1. Inicializacion de componentes desacoplados
     db_manager = DatabaseManager(uri_mongo=mongo_uri)
     gestor_lotes = GestorLotes(db_manager=db_manager)
     esp32_bridge = ESP32Bridge(db_manager=db_manager)
@@ -57,35 +58,16 @@ def main():
     # Iniciar streaming continuo del detector
     detector.iniciar()
 
-    # 2. Lanzar interfaz gráfica
-    if "--flet" in sys.argv:
-        print("[MOPPI] Iniciando interfaz Flet...")
-        import flet as ft
-        from ui.dashboard import InterfazClasificadora
-
-        def flet_entry(page: ft.Page):
-            InterfazClasificadora(
-                page=page,
-                detector=detector,
-                metricas=metricas,
-                db_manager=db_manager,
-            )
-
-        if hasattr(ft, "run"):
-            ft.run(flet_entry)
-        else:
-            ft.app(target=flet_entry)
-    else:
-        print("[MOPPI] Iniciando interfaz nativa CustomTkinter (30-60 FPS)...")
-        from ui.dashboard_ctk import DashboardCustomTkinter
-        app = DashboardCustomTkinter(
-            detector=detector,
-            metricas=metricas,
-            db_manager=db_manager,
-            gestor_lotes=gestor_lotes,
-            esp32_bridge=esp32_bridge,
-        )
-        app.mainloop()
+    # 2. Lanzar interfaz grafica nativa CustomTkinter (30-60 FPS)
+    print("[MOPPI] Iniciando interfaz nativa CustomTkinter (30-60 FPS)...")
+    app = DashboardCustomTkinter(
+        detector=detector,
+        metricas=metricas,
+        db_manager=db_manager,
+        gestor_lotes=gestor_lotes,
+        esp32_bridge=esp32_bridge,
+    )
+    app.mainloop()
 
 
 if __name__ == "__main__":

@@ -1,7 +1,23 @@
 """
-Capa de Presentación e Interfaz Visual (Flet)
+Capa de Presentacion e Interfaz Visual Industrial (CustomTkinter)
+Proyecto MOPPI - Clasificador Optico de Cafe
 """
-from ui.theme import InstitucionalTheme
-from ui.dashboard import InterfazClasificadora
+from ui.dashboard_ctk import (
+    DashboardCustomTkinter,
+    VentanaConfirmacionTrigger,
+    VentanaAdvertenciaCamaras,
+    VentanaLogsToplevel,
+)
 
-__all__ = ["InstitucionalTheme", "InterfazClasificadora"]
+# Alias de compatibilidad semantica para la HMI Industrial
+TableroIndustrial = DashboardCustomTkinter
+DashboardIndustrial = DashboardCustomTkinter
+
+__all__ = [
+    "DashboardCustomTkinter",
+    "TableroIndustrial",
+    "DashboardIndustrial",
+    "VentanaConfirmacionTrigger",
+    "VentanaAdvertenciaCamaras",
+    "VentanaLogsToplevel",
+]
