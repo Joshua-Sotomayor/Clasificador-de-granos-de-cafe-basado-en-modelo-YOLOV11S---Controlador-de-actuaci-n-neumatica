@@ -12,6 +12,11 @@ __pycache__/
 .pytest_cache/
 .vscode/
 
+# Cobertura de codigo y reportes de pruebas
+.coverage
+.coverage.*
+htmlcov/
+
 # Directorios auxiliares excluidos de seguimiento
 artefactos_entrenamiento/
 instrucciones_SDD/
