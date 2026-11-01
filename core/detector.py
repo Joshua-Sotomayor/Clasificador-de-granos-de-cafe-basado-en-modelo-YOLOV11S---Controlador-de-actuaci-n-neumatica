@@ -90,10 +90,34 @@ def asignar_canal(
     return max(0, min(canal, total_canales - 1))
 
 
+def aplicar_normalizacion_clahe(
+    frame: np.ndarray,
+    clip_limit: float = 2.0,
+    tile_grid_size: Tuple[int, int] = (8, 8),
+) -> np.ndarray:
+    """
+    Normaliza la iluminación del fotograma BGR mediante ecualización adaptativa CLAHE
+    en el canal de luminancia (L) del espacio de color LAB, estabilizando la inferencia
+    ante fluctuaciones de exposición automática de la cámara.
+    """
+    if frame is None or not isinstance(frame, np.ndarray) or frame.ndim != 3 or frame.shape[2] != 3:
+        return frame
+    try:
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        l_ch, a_ch, b_ch = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+        l_eq = clahe.apply(l_ch)
+        lab_eq = cv2.merge((l_eq, a_ch, b_ch))
+        return cv2.cvtColor(lab_eq, cv2.COLOR_LAB2BGR)
+    except Exception:
+        return frame
+
+
 def fusionar_detecciones_doble_camara(
     detecciones_top: List[Dict[str, Any]],
     detecciones_bottom: List[Dict[str, Any]],
     tolerancia_x_px: int = CAMERA_MATCHING_X_TOLERANCE_PX_DEFAULT,
+    tolerancia_y_px: int = 80,
 ) -> List[Dict[str, Any]]:
     """
     Fusión Lógica Booleana OR Inclusivo para Doble Cámara Maestro-Esclavo.
@@ -103,13 +127,15 @@ def fusionar_detecciones_doble_camara(
 
     - Cámara Superior (Maestro): Dicta canal cinemático y posición de referencia X/Y.
     - Cámara Inferior (Esclavo): Inspecciona cara ventral (reverso/hendidura).
-      Si coincide en el mismo canal y |X_top - X_bottom| <= tolerancia_x_px,
+      Si coincide en el mismo canal y |X_top - X_bottom| <= tolerancia_x_px
+      (y |Y_top - Y_bottom| <= tolerancia_y_px cuando hay coordenada Y disponible),
       transfiere su diagnóstico de anomalía al grano maestro correspondiente.
     - La cámara inferior NUNCA calcula línea de disparo ni emite órdenes a ESP32.
 
     :param detecciones_top: Detecciones de cara dorsal (Maestro).
     :param detecciones_bottom: Detecciones de cara ventral (Esclavo).
     :param tolerancia_x_px: Ventana de tolerancia horizontal en píxeles.
+    :param tolerancia_y_px: Ventana de tolerancia vertical en píxeles.
     :return: Lista de detecciones maestras consolidadas con diagnóstico fusionado.
     """
     bottom_disponibles = list(detecciones_bottom)
@@ -117,9 +143,11 @@ def fusionar_detecciones_doble_camara(
     for grano_top in detecciones_top:
         canal_top = grano_top.get("canal", asignar_canal(grano_top.get("x_center", 0)))
         x_top = grano_top.get("x_center", 0)
+        tiene_y_top = "y_center" in grano_top
+        y_top = grano_top.get("y_center", 0)
 
         mejor_idx_bottom = None
-        menor_delta_x = float("inf")
+        menor_distancia = float("inf")
 
         for idx, grano_bot in enumerate(bottom_disponibles):
             canal_bot = grano_bot.get("canal", asignar_canal(grano_bot.get("x_center", 0)))
@@ -127,8 +155,19 @@ def fusionar_detecciones_doble_camara(
                 continue
 
             delta_x = abs(grano_bot.get("x_center", 0) - x_top)
-            if delta_x <= tolerancia_x_px and delta_x < menor_delta_x:
-                menor_delta_x = delta_x
+            if delta_x > tolerancia_x_px:
+                continue
+
+            if tiene_y_top and "y_center" in grano_bot:
+                delta_y = abs(grano_bot.get("y_center", 0) - y_top)
+                if delta_y > tolerancia_y_px:
+                    continue
+                dist_match = (delta_x ** 2 + delta_y ** 2) ** 0.5
+            else:
+                dist_match = float(delta_x)
+
+            if dist_match < menor_distancia:
+                menor_distancia = dist_match
                 mejor_idx_bottom = idx
 
         def_top = bool(grano_top.get("es_defecto", False))
@@ -184,16 +223,16 @@ class GranoRastreado:
 
 class SeguidorGranos:
     """
-    Seguidor espacial anti-duplicidad para actuación mecatrónica (ESP32).
+    Seguidor espacial anti-duplicidad para actuación mecatrónica (ESP32) y conteo de lotes.
     Rastrea el tránsito cinemático de los granos a lo largo de cuadros sucesivos
-    y garantiza que cada grano defectuoso active su electroválvula EXACTAMENTE UNA VEZ
-    al cruzar la línea de disparo (Y >= 500).
+    mediante emparejamiento global por mínima distancia euclidiana y garantiza que cada
+    grano defectuoso active su electroválvula EXACTAMENTE UNA VEZ al cruzar la línea de disparo.
     """
 
     def __init__(
         self,
         distancia_max_px: float = 65.0,
-        tiempo_vida_s: float = 1.0,
+        tiempo_vida_s: float = 5.0,
     ):
         self.distancia_max_px = distancia_max_px
         self.tiempo_vida_s = tiempo_vida_s
@@ -214,7 +253,8 @@ class SeguidorGranos:
     ) -> List[int]:
         """
         Asocia detecciones del frame actual con granos rastreados mediante mínima
-        distancia euclidiana y filtra disparos redundantes.
+        distancia euclidiana global (evitando el robo de IDs entre granos vecinos)
+        y filtra disparos redundantes.
 
         :param detecciones: Lista de diccionarios de detecciones con centroides y canal.
         :param linea_disparo_y: Umbral horizontal Y donde se activa la eyección mecatrónica.
@@ -223,37 +263,45 @@ class SeguidorGranos:
         with self._lock:
             ahora = time.time()
             canales_a_disparar: List[int] = []
-            granos_asociados = set()
 
-            for det in detecciones:
+            # 1. Calcular todas las distancias candidatas (distancia, id_grano, idx_det)
+            pares_candidatos = []
+            for idx_det, det in enumerate(detecciones):
+                cx = det.get("x_center", 0)
+                cy = det.get("y_center", 0)
+                for gid, grano in self.granos_activos.items():
+                    dist = ((cx - grano.x) ** 2 + (cy - grano.y) ** 2) ** 0.5
+                    if dist < self.distancia_max_px:
+                        pares_candidatos.append((dist, gid, idx_det))
+
+            # 2. Ordenar globalmente de menor a mayor distancia para asignación biunívoca óptima
+            pares_candidatos.sort(key=lambda item: item[0])
+
+            granos_asociados = set()
+            dets_asociadas: Dict[int, int] = {}
+            for _, gid, idx_det in pares_candidatos:
+                if gid in granos_asociados or idx_det in dets_asociadas:
+                    continue
+                granos_asociados.add(gid)
+                dets_asociadas[idx_det] = gid
+
+            # 3. Actualizar granos emparejados y registrar nuevos granos
+            for idx_det, det in enumerate(detecciones):
                 cx = det.get("x_center", 0)
                 cy = det.get("y_center", 0)
                 canal = det.get("canal", asignar_canal(cx))
-                es_def = det.get("es_defecto", False)
+                es_def = bool(det.get("es_defecto", False))
 
-                mejor_id = None
-                mejor_dist = self.distancia_max_px
-
-                # Asociación voraz por menor distancia espacial
-                for gid, grano in self.granos_activos.items():
-                    if gid in granos_asociados:
-                        continue
-                    dist = ((cx - grano.x) ** 2 + (cy - grano.y) ** 2) ** 0.5
-                    if dist < mejor_dist:
-                        mejor_dist = dist
-                        mejor_id = gid
+                mejor_id = dets_asociadas.get(idx_det)
 
                 if mejor_id is not None:
-                    # Actualizar grano previamente rastreado
                     grano = self.granos_activos[mejor_id]
                     grano.x = cx
                     grano.y = cy
                     grano.canal = canal
-                    if es_def:
-                        grano.es_defecto = True
+                    grano.es_defecto = es_def
                     grano.ultimo_visto = ahora
                     grano.frames_visto += 1
-                    granos_asociados.add(mejor_id)
 
                     det["id_seguimiento"] = grano.id
                     det["procesado"] = grano.procesado
@@ -426,10 +474,13 @@ class YOLODetector:
         # Modelo YOLO compartido globalmente (mismo modelo para ambas cámaras)
         self.modelo = None
         self.modo_simulado = False
+        self.usar_clahe: bool = True
+        self.imgsz_inferencia: int = 640
         self._inicializar_modelo()
 
         # Telemetría y estado compartido entre hilos
         self.es_dual_sincronizado = True
+        self._ciclo_inferencia: int = 0
         self._frame_reciente: Optional[np.ndarray] = None
         self._frame_top_reciente: Optional[np.ndarray] = None
         self._frame_bottom_reciente: Optional[np.ndarray] = None
@@ -667,6 +718,7 @@ class YOLODetector:
     def iniciar_clasificacion(self) -> None:
         """Activa la inferencia del modelo YOLO y la clasificación continua."""
         with self._lock:
+            self.seguidor_granos.reset()
             self.clasificacion_activa = True
             self._pausado = False
 
@@ -688,6 +740,7 @@ class YOLODetector:
         """Detiene la clasificación activa volviendo al modo preview."""
         with self._lock:
             self.clasificacion_activa = False
+            self.seguidor_granos.reset()
             self._ultimas_detecciones = []
             self._ultimas_detecciones_top = []
             self._ultimas_detecciones_bottom = []
@@ -990,15 +1043,17 @@ class YOLODetector:
                 self._frame_reciente = frame_top.copy()
 
                 if self.clasificacion_activa:
-                    detecciones_actuales = list(self._ultimas_detecciones)
-                    detecciones_top_act = list(self._ultimas_detecciones_top)
-                    detecciones_bot_act = list(self._ultimas_detecciones_bottom)
+                    detecciones_actuales = [dict(d) for d in self._ultimas_detecciones]
+                    detecciones_top_act = [dict(d) for d in self._ultimas_detecciones_top]
+                    detecciones_bot_act = [dict(d) for d in self._ultimas_detecciones_bottom]
                     latencia_ms = self._latencia_inferencia_ms
+                    ciclo_inf = self._ciclo_inferencia
                 else:
                     detecciones_actuales = []
                     detecciones_top_act = []
                     detecciones_bot_act = []
                     latencia_ms = 0.0
+                    ciclo_inf = 0
 
             # 2. Calcular FPS de la cámara
             t_ahora = time.perf_counter()
@@ -1007,9 +1062,10 @@ class YOLODetector:
             fps = 1.0 / max(delta, 1e-4)
             self._fps_captura = fps
 
-            # 3. Evaluar disparo mecatrónico a ESP32 (SÓLO la cámara superior tiene autoridad)
-            if self.clasificacion_activa and detecciones_actuales:
-                self._evaluar_disparo_esp32(detecciones_actuales)
+            # 3. Evaluar disparo mecatrónico a ESP32 (si aún no fue evaluado en el hilo de inferencia)
+            if self.clasificacion_activa and (detecciones_actuales or detecciones_bot_act):
+                if detecciones_actuales and any("id_seguimiento" not in d for d in detecciones_actuales):
+                    self._evaluar_disparo_esp32(detecciones_actuales)
                 frame_top_anotado = self._dibujar_detecciones(frame_top, detecciones_actuales)
                 frame_bottom_anotado = self._dibujar_detecciones_inferior(frame_bottom, detecciones_bot_act)
             else:
@@ -1045,6 +1101,7 @@ class YOLODetector:
                 "valvula_activa": valvula_activa,
                 "total_detectados": len(detecciones_actuales),
                 "dual_sync": self.es_dual_sincronizado,
+                "ciclo_inferencia": ciclo_inf,
             }
 
             # Enviar a cola descartando cuadros viejos
@@ -1107,16 +1164,24 @@ class YOLODetector:
                 detecciones_bottom = []
 
             # 3. Fusión Booleana OR Inclusivo
-            detecciones_fusionadas = fusionar_detecciones_doble_camara(
-                detecciones_top,
-                detecciones_bottom,
-                tolerancia_x_px=self.tolerancia_x_match,
-            )
+            if not detecciones_top and detecciones_bottom and self._cap_top is None and self._cap_bottom is not None:
+                detecciones_fusionadas = [dict(d) for d in detecciones_bottom]
+            else:
+                detecciones_fusionadas = fusionar_detecciones_doble_camara(
+                    detecciones_top,
+                    detecciones_bottom,
+                    tolerancia_x_px=self.tolerancia_x_match,
+                )
+
+            # 4. Actualizar seguimiento de granos y disparo una única vez por ciclo real de inferencia
+            if self.clasificacion_activa and detecciones_fusionadas:
+                self._evaluar_disparo_esp32(detecciones_fusionadas)
 
             t1 = time.perf_counter()
             latencia_ms = (t1 - t0) * 1000.0
 
             with self._lock:
+                self._ciclo_inferencia += 1
                 self._ultimas_detecciones = detecciones_fusionadas
                 self._ultimas_detecciones_top = detecciones_top
                 self._ultimas_detecciones_bottom = detecciones_bottom
@@ -1124,6 +1189,12 @@ class YOLODetector:
 
             # Pequeña pausa para no saturar 100% el CPU
             time.sleep(0.02)
+
+    def _preprocesar_frame_inferencia(self, frame: np.ndarray) -> np.ndarray:
+        """Aplica normalización lumínica CLAHE al fotograma antes de inferir si está habilitada."""
+        if getattr(self, "usar_clahe", True):
+            return aplicar_normalizacion_clahe(frame)
+        return frame
 
     def _ejecutar_inferencia_sahi(
         self, frame: np.ndarray, es_bottom: bool = False
@@ -1138,7 +1209,8 @@ class YOLODetector:
                 return self._simular_detecciones_bottom([], frame.shape)
             return self._simular_detecciones(frame.shape)
 
-        h_img, w_img = frame.shape[:2]
+        frame_proc = self._preprocesar_frame_inferencia(frame)
+        h_img, w_img = frame_proc.shape[:2]
         slice_w, slice_h = 320, 320
         overlap = 0.20
         step_x = max(64, int(slice_w * (1.0 - overlap)))
@@ -1166,9 +1238,10 @@ class YOLODetector:
         scores = []
         clases = []
 
-        # 1. Inferencia sobre el frame completo para contexto global
+        # 1. Inferencia sobre el frame completo a resolución nativa (640) para contexto global
+        imgsz_global = getattr(self, "imgsz_inferencia", 640)
         try:
-            res_global = self.modelo(frame, imgsz=320, conf=self.confianza_minima, verbose=False)
+            res_global = self.modelo(frame_proc, imgsz=imgsz_global, conf=self.confianza_minima, verbose=False)
             for r in res_global:
                 for box in r.boxes:
                     c_id = int(box.cls[0].item())
@@ -1182,7 +1255,7 @@ class YOLODetector:
 
         # 2. Inferencia en cada ventana deslizante (slice)
         for (x_ini, y_ini, x_fin, y_fin) in slices:
-            crop = frame[y_ini:y_fin, x_ini:x_fin]
+            crop = frame_proc[y_ini:y_fin, x_ini:x_fin]
             if crop.size == 0:
                 continue
             try:
@@ -1245,16 +1318,24 @@ class YOLODetector:
         return detecciones
 
     def _ejecutar_inferencia(self, frame: np.ndarray) -> List[Dict[str, Any]]:
-        """Ejecuta YOLO optimizado con resolución adaptativa y mapeo espacial sobre la cámara superior."""
-        if self.modo_simulado or self.modelo is None or str(self.fuente_video_top).lower() in ("demo", "simulado", "synthetic"):
+        """Ejecuta YOLO optimizado con resolución nativa (640) y normalización CLAHE sobre la cámara superior."""
+        es_top_demo = str(self.fuente_video_top).lower() in ("demo", "simulado", "synthetic")
+        es_bottom_demo = str(self.fuente_video_bottom).lower() in ("demo", "simulado", "synthetic")
+        if self.modo_simulado or self.modelo is None:
             return self._simular_detecciones(frame.shape)
+        if es_top_demo:
+            if es_bottom_demo and self._cap_bottom is None:
+                return self._simular_detecciones(frame.shape)
+            return []
 
         if self.modo_sahi:
             return self._ejecutar_inferencia_sahi(frame, es_bottom=False)
 
+        frame_proc = self._preprocesar_frame_inferencia(frame)
+        imgsz_val = getattr(self, "imgsz_inferencia", 640)
         detecciones = []
         try:
-            resultados = self.modelo(frame, imgsz=320, conf=self.confianza_minima, verbose=False)
+            resultados = self.modelo(frame_proc, imgsz=imgsz_val, conf=self.confianza_minima, verbose=False)
             for r in resultados:
                 for box in r.boxes:
                     clase_id = int(box.cls[0].item())
@@ -1289,16 +1370,24 @@ class YOLODetector:
     def _ejecutar_inferencia_bottom(
         self, frame: np.ndarray, detecciones_top: Optional[List[Dict[str, Any]]] = None
     ) -> List[Dict[str, Any]]:
-        """Inferencia para la cámara inferior (reverso / ventral)."""
-        if self.modo_simulado or self.modelo is None or str(self.fuente_video_bottom).lower() in ("demo", "simulado", "synthetic"):
+        """Inferencia para la cámara inferior (reverso / ventral) con resolución nativa (640) y CLAHE."""
+        es_top_demo = str(self.fuente_video_top).lower() in ("demo", "simulado", "synthetic")
+        es_bottom_demo = str(self.fuente_video_bottom).lower() in ("demo", "simulado", "synthetic")
+        if self.modo_simulado or self.modelo is None:
             return self._simular_detecciones_bottom(detecciones_top or [], frame.shape)
+        if es_bottom_demo:
+            if es_top_demo and self._cap_top is None:
+                return self._simular_detecciones_bottom(detecciones_top or [], frame.shape)
+            return []
 
         if self.modo_sahi:
             return self._ejecutar_inferencia_sahi(frame, es_bottom=True)
 
+        frame_proc = self._preprocesar_frame_inferencia(frame)
+        imgsz_val = getattr(self, "imgsz_inferencia", 640)
         detecciones = []
         try:
-            resultados = self.modelo(frame, imgsz=320, conf=self.confianza_minima, verbose=False)
+            resultados = self.modelo(frame_proc, imgsz=imgsz_val, conf=self.confianza_minima, verbose=False)
             for r in resultados:
                 for box in r.boxes:
                     clase_id = int(box.cls[0].item())

@@ -211,6 +211,119 @@ class TestDualCameraVision(unittest.TestCase):
 
         self.detector.detener()
 
+    def test_estabilidad_estatica_sin_reconteo_ni_robo_ids(self):
+        """
+        Verifica que un conjunto de granos estáticos cercanos (35-45 px entre sí)
+        con parpadeos temporales de detección no intercambien IDs ni provoquen
+        re-conteo infinito en GestorLotes.
+        """
+        from storage.database import GestorLotes
+        db_temp = DatabaseManager(uri_mongo="", ruta_sqlite="storage/test_estatico_temp.db")
+        try:
+            gestor = GestorLotes(db_manager=db_temp)
+            seguidor = SeguidorGranos(distancia_max_px=65.0, tiempo_vida_s=5.0)
+
+            # Crear 12 granos estáticos cercanos entre sí (separados 40 px en X)
+            coordenadas_base = [(60 + (i % 4) * 40, 150 + (i // 4) * 45) for i in range(12)]
+
+            # Frame 1: Todos los 12 granos detectados como Robusta_Bueno
+            f1 = [
+                {
+                    "x_center": cx,
+                    "y_center": cy,
+                    "canal": asignar_canal(cx),
+                    "nombre_clase": "Robusta_Bueno",
+                    "clase_id": 1,
+                    "es_defecto": False,
+                }
+                for (cx, cy) in coordenadas_base
+            ]
+            seguidor.actualizar_y_filtrar_disparos(f1, linea_disparo_y=500)
+            gestor.registrar_detecciones(f1, fps=30.0, latencia_ms=15.0)
+            ids_iniciales = [d["id_seguimiento"] for d in f1]
+            self.assertEqual(gestor.total_granos, 12)
+            self.assertEqual(gestor.total_sanos, 12)
+            self.assertEqual(gestor.total_defectuosos, 0)
+
+            # Frame 2: El primer y quinto grano parpadean (no se detectan) y el orden cambia
+            f2 = [
+                {
+                    "x_center": cx + 1,
+                    "y_center": cy - 1,
+                    "canal": asignar_canal(cx + 1),
+                    "nombre_clase": "Robusta_Bueno",
+                    "clase_id": 1,
+                    "es_defecto": False,
+                }
+                for idx, (cx, cy) in enumerate(coordenadas_base)
+                if idx not in (0, 4)
+            ]
+            f2.reverse()  # Invertir orden simulando fluctuación de confianza en YOLO
+            seguidor.actualizar_y_filtrar_disparos(f2, linea_disparo_y=500)
+            gestor.registrar_detecciones(f2, fps=30.0, latencia_ms=15.0)
+            # No debe haberse creado ningún ID nuevo ni incrementado el conteo
+            self.assertEqual(gestor.total_granos, 12)
+
+            # Frame 3: Reaparecen todos los 12 granos
+            f3 = [
+                {
+                    "x_center": cx,
+                    "y_center": cy,
+                    "canal": asignar_canal(cx),
+                    "nombre_clase": "Robusta_Bueno",
+                    "clase_id": 1,
+                    "es_defecto": False,
+                }
+                for (cx, cy) in coordenadas_base
+            ]
+            seguidor.actualizar_y_filtrar_disparos(f3, linea_disparo_y=500)
+            gestor.registrar_detecciones(f3, fps=30.0, latencia_ms=15.0)
+            ids_finales = [d["id_seguimiento"] for d in f3]
+
+            self.assertEqual(ids_iniciales, ids_finales)
+            self.assertEqual(gestor.total_granos, 12)
+            self.assertEqual(gestor.total_sanos, 12)
+            self.assertEqual(gestor.total_defectuosos, 0)
+        finally:
+            db_temp.cerrar()
+            if os.path.exists("storage/test_estatico_temp.db"):
+                try:
+                    os.remove("storage/test_estatico_temp.db")
+                except Exception:
+                    pass
+
+    def test_aislamiento_grano_defecto_sin_contagio(self):
+        """
+        Verifica que al introducir un grano negro (defecto) junto a granos sanos en el mismo canal,
+        los granos sanos conserven su clasificación de grano bueno y su ID sin contaminarse.
+        """
+        seguidor = SeguidorGranos(distancia_max_px=65.0, tiempo_vida_s=5.0)
+
+        # Estado inicial: 3 granos sanos en el canal 0
+        frame_inicial = [
+            {"x_center": 50, "y_center": 120, "canal": 0, "nombre_clase": "Robusta_Bueno", "es_defecto": False},
+            {"x_center": 95, "y_center": 120, "canal": 0, "nombre_clase": "Robusta_Bueno", "es_defecto": False},
+            {"x_center": 140, "y_center": 120, "canal": 0, "nombre_clase": "Robusta_Bueno", "es_defecto": False},
+        ]
+        seguidor.actualizar_y_filtrar_disparos(frame_inicial, linea_disparo_y=500)
+        ids_sanos = [d["id_seguimiento"] for d in frame_inicial]
+
+        # Se introduce un grano negro en (95, 165) dentro del mismo canal 0 (a 45 px de distancia)
+        frame_con_negro = [
+            {"x_center": 95, "y_center": 165, "canal": 0, "nombre_clase": "Grano_Defecto", "es_defecto": True},
+            {"x_center": 50, "y_center": 120, "canal": 0, "nombre_clase": "Robusta_Bueno", "es_defecto": False},
+            {"x_center": 95, "y_center": 120, "canal": 0, "nombre_clase": "Robusta_Bueno", "es_defecto": False},
+            {"x_center": 140, "y_center": 120, "canal": 0, "nombre_clase": "Robusta_Bueno", "es_defecto": False},
+        ]
+        seguidor.actualizar_y_filtrar_disparos(frame_con_negro, linea_disparo_y=500)
+
+        # El grano negro recibe un ID nuevo (4) y los 3 granos sanos conservan sus IDs (1, 2, 3) y es_defecto=False
+        self.assertEqual(frame_con_negro[0]["id_seguimiento"], 4)
+        self.assertTrue(frame_con_negro[0]["es_defecto"])
+        self.assertEqual([d["id_seguimiento"] for d in frame_con_negro[1:]], ids_sanos)
+        for d_sano in frame_con_negro[1:]:
+            self.assertFalse(d_sano["es_defecto"])
+
 
 
 

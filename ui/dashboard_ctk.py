@@ -545,9 +545,9 @@ class DashboardCustomTkinter(ctk.CTk):
             text_color=GRIS_TEXTO,
             text_color_disabled=GRIS_MEDIO,
             height=80,
-            width=580,
-            font=("Arial", 24),
-            corner_radius=40,
+            width=620,
+            font=("Arial", 19),
+            corner_radius=32,
         )
         self.pestañas.set("Dashboard")
         self.pestañas.grid(row=0, column=1, sticky="ne", padx=(10, 20), pady=15)
@@ -731,9 +731,9 @@ class DashboardCustomTkinter(ctk.CTk):
 
         for nombre_btn, boton in self.pestañas._buttons_dict.items():
             if nombre_btn == nombre:
-                boton.configure(font=("Arial", 24, "underline"), text_color="white")
+                boton.configure(font=("Arial", 19, "underline"), text_color="white")
             else:
-                boton.configure(font=("Arial", 24), text_color=GRIS_TEXTO)
+                boton.configure(font=("Arial", 19), text_color=GRIS_TEXTO)
 
         # Actualizar datos si se entra a analíticas o registros
         self._actualizar_indicador_bd_y_lotes()
@@ -1070,15 +1070,19 @@ class DashboardCustomTkinter(ctk.CTk):
             border_color=GRIS_BORDE,
         )
         panel_estats.grid(row=0, column=1, sticky="nsew", padx=(10, 20), pady=(0, 20))
-        panel_estats.grid_columnconfigure(0, weight=1)
-        panel_estats.grid_columnconfigure(1, weight=1)
+
+        # Contenedor flotante centrado vertical y horizontalmente dentro del panel
+        contenedor_estats = ctk.CTkFrame(panel_estats, fg_color="transparent")
+        contenedor_estats.place(relx=0.5, rely=0.5, anchor="center")
+        contenedor_estats.grid_columnconfigure(0, weight=1)
+        contenedor_estats.grid_columnconfigure(1, weight=1)
 
         def crear_tarjeta(titulo: str, lineas: List[str], grande: bool = False, destacada: bool = False):
-            ancho, alto = (276, 155) if grande else (276, 100)
+            ancho, alto = (276, 180) if grande else (276, 125)
             tarjeta = ctk.CTkFrame(
-                panel_estats,
+                contenedor_estats,
                 fg_color=VERDE_TARJETA if destacada else GRIS_SUAVE,
-                corner_radius=alto / 4,
+                corner_radius=int(alto / 4),
                 border_width=2,
                 border_color=VERDE if destacada else GRIS_BORDE,
                 width=ancho,
@@ -1090,35 +1094,36 @@ class DashboardCustomTkinter(ctk.CTk):
             ctk.CTkLabel(
                 tarjeta,
                 text=titulo,
-                font=("Arial", 24, "bold", "underline"),
+                font=("Arial", 22, "bold", "underline"),
                 text_color=GRIS_TEXTO,
             ).pack(pady=(12, 4))
 
             etiquetas = []
+            f_size = 38 if grande else 40
             for linea in lineas:
                 lbl = ctk.CTkLabel(
                     tarjeta,
                     text=linea,
-                    font=("Arial", 40, "bold"),
+                    font=("Arial", f_size, "bold"),
                     text_color=VERDE_HOVER if destacada else GRIS_TEXTO,
                 )
                 lbl.pack()
                 etiquetas.append(lbl)
             return tarjeta, etiquetas
 
-        # Tarjetas fila 1
+        # Tarjetas fila 1: Tiempo y Consumo ampliadas a 125 px de alto
         t_tiempo, lbls_tiempo = crear_tarjeta("Tiempo de Uso", ["00:00 h"])
-        t_tiempo.grid(row=0, column=0, padx=(25, 8), pady=(28, 12))
+        t_tiempo.grid(row=0, column=0, padx=(0, 8), pady=(0, 10))
 
         t_consumo, lbls_consumo = crear_tarjeta("Consumo", ["--- kWh"])
-        t_consumo.grid(row=0, column=1, padx=(8, 25), pady=(28, 12))
+        t_consumo.grid(row=0, column=1, padx=(8, 0), pady=(0, 10))
 
-        # Tarjetas fila 2
+        # Tarjetas fila 2: Estadísticas y Rendimiento ampliadas a 180 px de alto
         t_estats, lbls_estats = crear_tarjeta("Estadísticas", ["--- grs", "--- %"], grande=True, destacada=True)
-        t_estats.grid(row=1, column=0, padx=(25, 8), pady=12)
+        t_estats.grid(row=1, column=0, padx=(0, 8), pady=10)
 
         t_rend, lbls_rend = crear_tarjeta("Rendimiento (Prom)", ["--- FPS", "--- ms"], grande=True)
-        t_rend.grid(row=1, column=1, padx=(8, 25), pady=12)
+        t_rend.grid(row=1, column=1, padx=(8, 0), pady=10)
 
         self.stat_tiempo = lbls_tiempo[0]
         self.stat_consumo = lbls_consumo[0]
@@ -1127,34 +1132,35 @@ class DashboardCustomTkinter(ctk.CTk):
         self.stat_fps = lbls_rend[0]
         self.stat_ms = lbls_rend[1]
 
-        # Botones inferiores de acción
+        # Botones inferiores de acción centrados en el bloque
         btn_terminar = ctk.CTkButton(
-            panel_estats,
+            contenedor_estats,
             text="Terminar Lote",
             fg_color=AMBAR_RESET,
             hover_color=AMBAR_HOVER,
             text_color="white",
-            corner_radius=45,
-            height=80,
-            width=578,
-            font=("Arial", 32, "bold"),
+            corner_radius=39,
+            height=78,
+            width=568,
+            font=("Arial", 30, "bold"),
             command=self._al_pulsar_terminar_lote,
         )
-        btn_terminar.grid(row=2, column=0, columnspan=2, sticky="ew", padx=25, pady=(25, 12))
+        btn_terminar.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(16, 8))
 
         btn_sincronizar = ctk.CTkButton(
-            panel_estats,
+            contenedor_estats,
             text="Sincronizar con Base de Datos",
             fg_color=VERDE,
             hover_color=VERDE_HOVER,
             text_color="white",
-            corner_radius=45,
-            height=80,
-            width=578,
-            font=("Arial", 32, "bold"),
+            corner_radius=39,
+            height=78,
+            width=568,
+            font=("Arial", 28, "bold"),
             command=self._al_pulsar_sincronizar_db,
         )
-        btn_sincronizar.grid(row=3, column=0, columnspan=2, sticky="ew", padx=25, pady=12)
+        btn_sincronizar.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+
 
     # =========================================================================
     # VISTA 3: REGISTROS (Historial y Consola de Auditoría Local LOGS)
@@ -1253,7 +1259,7 @@ class DashboardCustomTkinter(ctk.CTk):
         tabla = ctk.CTkFrame(
             padre,
             width=1204,
-            height=230,
+            height=280,
             fg_color=GRIS_PANEL,
             corner_radius=10,
             border_width=2,
@@ -1607,6 +1613,8 @@ class DashboardCustomTkinter(ctk.CTk):
             # Si hay granos procesados, cerrar y guardar el lote
             if getattr(self.gestor_lotes, "total_granos", 0) > 0:
                 self.gestor_lotes.finalizar_lote()
+            if hasattr(self.detector, "seguidor_granos") and self.detector.seguidor_granos is not None:
+                self.detector.seguidor_granos.reset()
             self.metricas.reiniciar()
             self.db_manager.registrar_log_local("INFO", "Reset de contadores y retorno a STANDBY.")
             self._actualizar_fsm("STANDBY")
@@ -1780,9 +1788,27 @@ class DashboardCustomTkinter(ctk.CTk):
 
             # Si la clasificadora está en marcha, registrar detecciones en GestorLotes y GestorMetricas
             if payloads and self.estado_operativo == "EN_MARCHA":
+                ultimo_ciclo_reg = getattr(self, "_ultimo_ciclo_inferencia_reg", -1)
                 for p in payloads:
+                    ciclo_p = p.get("ciclo_inferencia")
+                    if ciclo_p is not None and ciclo_p > 0:
+                        if ciclo_p == ultimo_ciclo_reg:
+                            continue
+                        ultimo_ciclo_reg = ciclo_p
+                        self._ultimo_ciclo_inferencia_reg = ciclo_p
+
                     dets = p.get("detecciones", [])
+                    if not dets and self.camara_vista_activa == "BOTTOM":
+                        dets = p.get("detecciones_bottom", [])
                     if dets:
+                        if (
+                            any("id_seguimiento" not in d for d in dets)
+                            and hasattr(self.detector, "seguidor_granos")
+                            and self.detector.seguidor_granos is not None
+                        ):
+                            self.detector.seguidor_granos.actualizar_y_filtrar_disparos(
+                                dets, linea_disparo_y=getattr(self.detector, "linea_disparo_y", 500)
+                            )
                         fps_p = float(p.get("fps", self._fps_actual))
                         lat_p = float(p.get("latencia_ms", self._latencia_inferencia_actual))
                         if self.gestor_lotes:
@@ -2023,6 +2049,8 @@ class DashboardCustomTkinter(ctk.CTk):
         """Cierra manualmente el lote activo y persiste sus métricas en SQLite."""
         if getattr(self.gestor_lotes, "lote_activo", False):
             self.gestor_lotes.finalizar_lote()
+            if hasattr(self.detector, "seguidor_granos") and self.detector.seguidor_granos is not None:
+                self.detector.seguidor_granos.reset()
             self.db_manager.registrar_log_local("INFO", "Lote finalizado manualmente desde Analíticas.")
             if "unittest" not in sys.modules:
                 messagebox.showinfo("Lote Finalizado", "El lote activo ha sido cerrado y guardado correctamente.")
