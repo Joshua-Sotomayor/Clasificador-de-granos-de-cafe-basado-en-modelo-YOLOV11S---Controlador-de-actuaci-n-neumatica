@@ -324,6 +324,24 @@ class TestDualCameraVision(unittest.TestCase):
         for d_sano in frame_con_negro[1:]:
             self.assertFalse(d_sano["es_defecto"])
 
+    def test_modo_camara_unica_aislamiento_y_conmutacion(self):
+        """
+        Verifica que en modo_camara_unica el detector permita conmutar la cámara activa ('TOP' o 'BOTTOM'),
+        reinicie el seguidor de granos al alternar y alimente Analíticas exclusivamente con la cámara activa.
+        """
+        self.assertTrue(self.detector.modo_camara_unica)
+        self.assertEqual(self.detector.camara_unica_activa, "TOP")
+
+        # Registrar un grano en el seguidor y verificar que al cambiar a BOTTOM se reinicia el seguidor
+        self.detector.seguidor_granos.actualizar_y_filtrar_disparos(
+            [{"x_center": 100, "y_center": 200, "canal": 0, "es_defecto": False}]
+        )
+        self.assertEqual(len(self.detector.seguidor_granos.granos_activos), 1)
+
+        self.detector.establecer_camara_unica_activa("BOTTOM")
+        self.assertEqual(self.detector.camara_unica_activa, "BOTTOM")
+        self.assertEqual(len(self.detector.seguidor_granos.granos_activos), 0)
+
 
 
 

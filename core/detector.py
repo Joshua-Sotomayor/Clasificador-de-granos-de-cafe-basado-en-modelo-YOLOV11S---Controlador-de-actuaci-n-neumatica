@@ -397,6 +397,7 @@ class YOLODetector:
         fuente_video_bottom: Optional[Union[int, str]] = None,
         tolerancia_x_match: Optional[int] = None,
         ruta_modelo_13clases: Optional[str] = None,
+        modo_camara_unica: Optional[bool] = None,
     ):
         """
         :param ruta_modelo: Ruta al archivo de pesos Tri-clase (.pt). Por defecto models/best.pt.
@@ -446,6 +447,13 @@ class YOLODetector:
         self.tolerancia_x_match = (
             tolerancia_x_match if tolerancia_x_match is not None else CAMERA_MATCHING_X_TOLERANCE_PX_DEFAULT
         )
+
+        # Modo de Cámara Única para banco de pruebas estáticas y dinámicas
+        if modo_camara_unica is not None:
+            self.modo_camara_unica: bool = bool(modo_camara_unica)
+        else:
+            self.modo_camara_unica = os.getenv("SINGLE_CAMERA_MODE", "True").lower() in ("true", "1", "yes")
+        self.camara_unica_activa: str = os.getenv("SINGLE_CAMERA_ACTIVE", "TOP").upper()
 
         # Seguidor espacial anti-duplicidad
         self.seguidor_granos = SeguidorGranos()
@@ -627,9 +635,24 @@ class YOLODetector:
             self.posicion_camara_invertida = not self.posicion_camara_invertida
             nueva_top = self.fuente_video_bottom
             nueva_bot = self.fuente_video_top
+            self.seguidor_granos.reset()
             self.cambiar_fuentes_video(nueva_top, nueva_bot)
             self.guardar_config_maquina()
             return self.fuente_video_top, self.fuente_video_bottom
+
+    def establecer_camara_unica_activa(self, vista: str) -> None:
+        """
+        Define cuál de las dos cámaras ('TOP' o 'BOTTOM') actúa como fuente única de inferencia,
+        seguimiento y analíticas cuando el modo de cámara única está habilitado.
+        """
+        nueva_vista = "BOTTOM" if str(vista).upper() == "BOTTOM" else "TOP"
+        with self._lock:
+            if self.camara_unica_activa != nueva_vista:
+                self.camara_unica_activa = nueva_vista
+                self.seguidor_granos.reset()
+                self._ultimas_detecciones = []
+                self._ultimas_detecciones_top = []
+                self._ultimas_detecciones_bottom = []
 
     def _inicializar_modelo(self) -> None:
         """
@@ -981,10 +1004,12 @@ class YOLODetector:
             and (time.time() - self._ultimo_frame_bottom_real_ts < 3.0)
         )
 
+        todas_ok = (top_activa or bottom_activa) if getattr(self, "modo_camara_unica", False) else (top_activa and bottom_activa)
+
         return {
             "top_ok": top_activa,
             "bottom_ok": bottom_activa,
-            "todas_ok": top_activa and bottom_activa,
+            "todas_ok": todas_ok,
             "ninguna_ok": not top_activa and not bottom_activa,
             "es_demo_top": es_demo_top,
             "es_demo_bottom": es_demo_bottom,
@@ -1067,12 +1092,18 @@ class YOLODetector:
                 if detecciones_actuales and any("id_seguimiento" not in d for d in detecciones_actuales):
                     self._evaluar_disparo_esp32(detecciones_actuales)
                 frame_top_anotado = self._dibujar_detecciones(frame_top, detecciones_actuales)
-                frame_bottom_anotado = self._dibujar_detecciones_inferior(frame_bottom, detecciones_bot_act)
+                if getattr(self, "modo_camara_unica", False) and self.camara_unica_activa == "BOTTOM":
+                    frame_bottom_anotado = self._dibujar_detecciones(frame_bottom, detecciones_actuales)
+                else:
+                    frame_bottom_anotado = self._dibujar_detecciones_inferior(frame_bottom, detecciones_bot_act)
             else:
                 frame_top_anotado = frame_top.copy()
                 self._dibujar_guias_canales_y_disparo(frame_top_anotado)
                 frame_bottom_anotado = frame_bottom.copy()
-                self._dibujar_guias_canales_inferior(frame_bottom_anotado)
+                if getattr(self, "modo_camara_unica", False) and self.camara_unica_activa == "BOTTOM":
+                    self._dibujar_guias_canales_y_disparo(frame_bottom_anotado)
+                else:
+                    self._dibujar_guias_canales_inferior(frame_bottom_anotado)
 
             # 4. Telemetría y estado de válvula neumática
             valvula_activa = any(
@@ -1154,28 +1185,45 @@ class YOLODetector:
                 continue
 
             t0 = time.perf_counter()
-            # 1. Inferencia en Cámara Superior (Maestro / Cara Dorsal)
-            detecciones_top = self._ejecutar_inferencia(frame_top_para_inferir)
-
-            # 2. Inferencia en Cámara Inferior (Esclavo / Cara Ventral)
-            if frame_bottom_para_inferir is not None:
-                detecciones_bottom = self._ejecutar_inferencia_bottom(frame_bottom_para_inferir, detecciones_top)
-            else:
-                detecciones_bottom = []
-
-            # 3. Fusión Booleana OR Inclusivo
-            if not detecciones_top and detecciones_bottom and self._cap_top is None and self._cap_bottom is not None:
-                detecciones_fusionadas = [dict(d) for d in detecciones_bottom]
-            else:
-                detecciones_fusionadas = fusionar_detecciones_doble_camara(
-                    detecciones_top,
-                    detecciones_bottom,
-                    tolerancia_x_px=self.tolerancia_x_match,
+            if getattr(self, "modo_camara_unica", False):
+                # Modo de Cámara Única: procesar exclusivamente la cámara activa seleccionada
+                usar_bottom = (
+                    self.camara_unica_activa == "BOTTOM"
+                    or (self._cap_top is None and self._cap_bottom is not None)
                 )
+                if usar_bottom and frame_bottom_para_inferir is not None:
+                    detecciones_bottom = self._ejecutar_inferencia_bottom(frame_bottom_para_inferir, [])
+                    detecciones_top = []
+                    detecciones_fusionadas = [dict(d) for d in detecciones_bottom]
+                else:
+                    detecciones_top = self._ejecutar_inferencia(frame_top_para_inferir)
+                    detecciones_bottom = []
+                    detecciones_fusionadas = [dict(d) for d in detecciones_top]
+            else:
+                # 1. Inferencia en Cámara Superior (Maestro / Cara Dorsal)
+                detecciones_top = self._ejecutar_inferencia(frame_top_para_inferir)
+
+                # 2. Inferencia en Cámara Inferior (Esclavo / Cara Ventral)
+                if frame_bottom_para_inferir is not None:
+                    detecciones_bottom = self._ejecutar_inferencia_bottom(frame_bottom_para_inferir, detecciones_top)
+                else:
+                    detecciones_bottom = []
+
+                # 3. Fusión Booleana OR Inclusivo
+                if not detecciones_top and detecciones_bottom and self._cap_top is None and self._cap_bottom is not None:
+                    detecciones_fusionadas = [dict(d) for d in detecciones_bottom]
+                else:
+                    detecciones_fusionadas = fusionar_detecciones_doble_camara(
+                        detecciones_top,
+                        detecciones_bottom,
+                        tolerancia_x_px=self.tolerancia_x_match,
+                    )
 
             # 4. Actualizar seguimiento de granos y disparo una única vez por ciclo real de inferencia
             if self.clasificacion_activa and detecciones_fusionadas:
                 self._evaluar_disparo_esp32(detecciones_fusionadas)
+                if getattr(self, "modo_camara_unica", False) and self.camara_unica_activa == "BOTTOM":
+                    detecciones_bottom = [dict(d) for d in detecciones_fusionadas]
 
             t1 = time.perf_counter()
             latencia_ms = (t1 - t0) * 1000.0
@@ -1374,9 +1422,13 @@ class YOLODetector:
         es_top_demo = str(self.fuente_video_top).lower() in ("demo", "simulado", "synthetic")
         es_bottom_demo = str(self.fuente_video_bottom).lower() in ("demo", "simulado", "synthetic")
         if self.modo_simulado or self.modelo is None:
+            if getattr(self, "modo_camara_unica", False) and not detecciones_top:
+                return self._simular_detecciones(frame.shape)
             return self._simular_detecciones_bottom(detecciones_top or [], frame.shape)
         if es_bottom_demo:
             if es_top_demo and self._cap_top is None:
+                if getattr(self, "modo_camara_unica", False) and not detecciones_top:
+                    return self._simular_detecciones(frame.shape)
                 return self._simular_detecciones_bottom(detecciones_top or [], frame.shape)
             return []
 

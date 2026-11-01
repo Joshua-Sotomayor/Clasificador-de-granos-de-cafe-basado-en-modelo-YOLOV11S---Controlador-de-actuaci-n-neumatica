@@ -1730,6 +1730,8 @@ class DashboardCustomTkinter(ctk.CTk):
                 text="CÁMARA SUPERIOR (MAESTRO) | CONTROL DE DISPARO",
                 text_color=VERDE_CLARO,
             )
+        if hasattr(self.detector, "establecer_camara_unica_activa"):
+            self.detector.establecer_camara_unica_activa(self.camara_vista_activa)
 
     def _al_conmutar_modelo(self, seleccion: str) -> None:
         """Conmuta globalmente el modelo de IA para ambas cámaras (Tri-clase / 13 Clases, con o sin SAHI)."""
